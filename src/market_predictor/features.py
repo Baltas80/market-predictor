@@ -29,7 +29,16 @@ def add_market_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def make_target(df: pd.DataFrame, horizon: int = 5) -> pd.Series:
-    """Binary target: 1 when future close is above current close."""
+    """Binary target for future direction, leaving unavailable labels as NaN.
+
+    A target is 1 when the close after ``horizon`` observations is above
+    the current close, 0 when it is not, and NaN when that future observation
+    does not exist. Keeping the final unknown labels as NaN prevents the end
+    of a dataset from being incorrectly treated as negative examples.
+    """
     if horizon < 1:
         raise ValueError("horizon must be >= 1")
-    return (df["close"].shift(-horizon) > df["close"]).astype("float")
+
+    future_close = df["close"].shift(-horizon)
+    target = (future_close > df["close"]).astype("float64")
+    return target.where(future_close.notna())
