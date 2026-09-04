@@ -7,6 +7,7 @@ import pandas as pd
 from .backtest import Fold, make_walk_forward_folds, walk_forward_classification
 from .experiments import ExperimentResult, run_feature_ablation
 from .features import add_market_features, make_target
+from .financial import backtest_long_only
 
 FEATURE_COLUMNS = [
     "return_1d",
@@ -122,3 +123,52 @@ def run_final_lockbox_experiments(
         macro_features=macro_features,
         geopolitical_features=geopolitical_features,
     )
+
+
+def run_final_lockbox_financial_comparison(
+    df: pd.DataFrame,
+    *,
+    horizon: int = 5,
+    test_fraction: float = 0.2,
+    macro_features: list[str] | None = None,
+    geopolitical_features: list[str] | None = None,
+    threshold: float = 0.5,
+    transaction_cost_bps: float = 5.0,
+    slippage_bps: float = 0.0,
+    periods_per_year: int = 252,
+) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
+    """Compare A/B/C financial performance on the exact same OOS lockbox.
+
+    Predictions are aligned back to the prepared close series before the
+    financial engine is called. The same threshold, costs and annualization
+    assumptions are used for every experiment.
+    """
+    data = prepare_baseline_data(df, horizon=horizon)
+    experiments = run_final_lockbox_experiments(
+        df,
+        horizon=horizon,
+        test_fraction=test_fraction,
+        macro_features=macro_features,
+        geopolitical_features=geopolitical_features,
+    )
+
+    rows: list[dict[str, float | str]] = []
+    backtests: dict[str, pd.DataFrame] = {}
+    reference_index: pd.Index | None = None
+    for experiment in experiments:
+        frame = experiment.predictions.join(data[["close"]], how="left")
+        if reference_index is None:
+            reference_index = frame.index
+        elif not frame.index.equals(reference_index):
+            raise ValueError("A/B/C predictions do not share the same lockbox index")
+        backtest_frame, metrics = backtest_long_only(
+            frame,
+            threshold=threshold,
+            transaction_cost_bps=transaction_cost_bps,
+            slippage_bps=slippage_bps,
+            periods_per_year=periods_per_year,
+        )
+        backtests[experiment.name] = backtest_frame
+        rows.append({"experiment": experiment.name, **metrics})
+
+    return pd.DataFrame(rows), backtests
