@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from .backtest import make_walk_forward_folds, walk_forward_classification
+from .backtest import Fold, make_walk_forward_folds, walk_forward_classification
 from .features import add_market_features, make_target
 
 FEATURE_COLUMNS = [
@@ -50,3 +50,32 @@ def run_baseline(
         purge=horizon,
     )
     return walk_forward_classification(data, FEATURE_COLUMNS, "target", folds)
+
+
+def run_final_lockbox(
+    df: pd.DataFrame,
+    horizon: int = 5,
+    test_fraction: float = 0.2,
+) -> tuple[pd.DataFrame, list]:
+    """Evaluate one untouched chronological final OOS holdout.
+
+    The final ``test_fraction`` of model-ready observations is reserved as a
+    lockbox. Training ends before a purge gap of ``horizon`` observations,
+    and no expanding-window refits are performed inside the lockbox. This
+    function is intended for the final reported estimate after model choices
+    and sensitivity settings have been frozen.
+    """
+    if horizon < 1:
+        raise ValueError("horizon must be >= 1")
+    if not 0 < test_fraction < 0.5:
+        raise ValueError("test_fraction must be > 0 and < 0.5")
+
+    data = prepare_baseline_data(df, horizon=horizon)
+    n_rows = len(data)
+    test_size = max(1, int(n_rows * test_fraction))
+    train_end = n_rows - test_size - horizon
+    if train_end < 2:
+        raise ValueError("not enough observations for lockbox train, purge, and test")
+
+    fold = Fold(0, train_end, train_end + horizon, n_rows)
+    return walk_forward_classification(data, FEATURE_COLUMNS, "target", [fold])
