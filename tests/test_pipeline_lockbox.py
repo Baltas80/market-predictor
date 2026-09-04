@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from market_predictor.pipeline import run_final_lockbox
+from market_predictor.pipeline import prepare_baseline_data, run_final_lockbox
 
 
 def _ohlcv(n=140):
@@ -22,9 +22,12 @@ def _ohlcv(n=140):
 
 
 def test_final_lockbox_returns_only_one_untouched_test_block():
-    result, evaluations = run_final_lockbox(_ohlcv(), horizon=5, test_fraction=0.2)
+    raw = _ohlcv()
+    prepared = prepare_baseline_data(raw, horizon=5)
+    result, evaluations = run_final_lockbox(raw, horizon=5, test_fraction=0.2)
+    expected_test_size = max(1, int(len(prepared) * 0.2))
     assert len(evaluations) == 1
-    assert len(result) == 17
+    assert len(result) == expected_test_size
     assert result.index.is_monotonic_increasing
     assert result.index.is_unique
 
