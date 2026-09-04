@@ -5,6 +5,8 @@ from __future__ import annotations
 import pandas as pd
 
 from .backtest import Fold, make_walk_forward_folds, walk_forward_classification
+from .event_features import events_to_features
+from .event_schema import MarketEvent
 from .experiments import ExperimentResult, run_feature_ablation
 from .features import add_market_features, make_target
 from .financial import backtest_long_only
@@ -32,11 +34,7 @@ def run_baseline(
     initial_train_fraction: float = 0.6,
     test_fraction: float = 0.1,
 ) -> tuple[pd.DataFrame, list]:
-    """Run expanding-window out-of-sample evaluation with a purge gap.
-
-    The gap equals ``horizon`` so training labels cannot reach into the first
-    observations of the test window.
-    """
+    """Run expanding-window out-of-sample evaluation with a purge gap."""
     if not 0.5 <= initial_train_fraction < 1:
         raise ValueError("initial_train_fraction must be >= 0.5 and < 1")
     if not 0 < test_fraction < 0.5:
@@ -59,14 +57,7 @@ def run_final_lockbox(
     horizon: int = 5,
     test_fraction: float = 0.2,
 ) -> tuple[pd.DataFrame, list]:
-    """Evaluate one untouched chronological final OOS holdout.
-
-    The final ``test_fraction`` of model-ready observations is reserved as a
-    lockbox. Training ends before a purge gap of ``horizon`` observations,
-    and no expanding-window refits are performed inside the lockbox. This
-    function is intended for the final reported estimate after model choices
-    and sensitivity settings have been frozen.
-    """
+    """Evaluate one untouched chronological final OOS holdout."""
     if horizon < 1:
         raise ValueError("horizon must be >= 1")
     if not 0 < test_fraction < 0.5:
@@ -83,6 +74,16 @@ def run_final_lockbox(
     return walk_forward_classification(data, FEATURE_COLUMNS, "target", [fold])
 
 
+def _final_lockbox_fold(data: pd.DataFrame, horizon: int, test_fraction: float) -> Fold:
+    """Create the single final lockbox fold shared by all experiments."""
+    n_rows = len(data)
+    test_size = max(1, int(n_rows * test_fraction))
+    train_end = n_rows - test_size - horizon
+    if train_end < 2:
+        raise ValueError("not enough observations for lockbox train, purge, and test")
+    return Fold(0, train_end, train_end + horizon, n_rows)
+
+
 def run_final_lockbox_experiments(
     df: pd.DataFrame,
     *,
@@ -91,12 +92,7 @@ def run_final_lockbox_experiments(
     macro_features: list[str] | None = None,
     geopolitical_features: list[str] | None = None,
 ) -> list[ExperimentResult]:
-    """Run A/B/C feature experiments against one identical untouched lockbox.
-
-    A = technical, B = technical + macro, C = technical + macro +
-    geopolitical. All three use the same final chronological test block and
-    the same purge gap, making financial comparisons directly comparable.
-    """
+    """Run A/B/C feature experiments against one identical untouched lockbox."""
     if horizon < 1:
         raise ValueError("horizon must be >= 1")
     if not 0 < test_fraction < 0.5:
@@ -110,18 +106,54 @@ def run_final_lockbox_experiments(
     if missing:
         raise ValueError(f"Missing columns: {missing}")
 
-    n_rows = len(data)
-    test_size = max(1, int(n_rows * test_fraction))
-    train_end = n_rows - test_size - horizon
-    if train_end < 2:
-        raise ValueError("not enough observations for lockbox train, purge, and test")
-
-    fold = Fold(0, train_end, train_end + horizon, n_rows)
+    fold = _final_lockbox_fold(data, horizon, test_fraction)
     return run_feature_ablation(
         data,
         [fold],
         macro_features=macro_features,
         geopolitical_features=geopolitical_features,
+    )
+
+
+def run_final_lockbox_event_experiments(
+    df: pd.DataFrame,
+    events: list[MarketEvent],
+    *,
+    horizon: int = 5,
+    test_fraction: float = 0.2,
+    macro_features: list[str] | None = None,
+    event_features: list[str] | None = None,
+    event_half_life_days: float = 7.0,
+) -> list[ExperimentResult]:
+    """Run A/B/C using timestamped events as the geopolitical feature set.
+
+    Event features are generated from the full chronological market index
+    before target filtering. ``published_at`` therefore controls exactly when
+    information can enter experiment C; later confirmation cannot leak into
+    earlier observations.
+    """
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise TypeError("df must have a DatetimeIndex for event features")
+
+    event_data = events_to_features(
+        df.index,
+        events,
+        half_life_days=event_half_life_days,
+    )
+    enriched = df.join(event_data, how="left")
+    macro_features = macro_features or []
+    if event_features is None:
+        event_features = list(event_data.columns)
+    missing = [column for column in event_features if column not in enriched.columns]
+    if missing:
+        raise ValueError(f"Missing event columns: {missing}")
+
+    return run_final_lockbox_experiments(
+        enriched,
+        horizon=horizon,
+        test_fraction=test_fraction,
+        macro_features=macro_features,
+        geopolitical_features=event_features,
     )
 
 
@@ -137,12 +169,7 @@ def run_final_lockbox_financial_comparison(
     slippage_bps: float = 0.0,
     periods_per_year: int = 252,
 ) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
-    """Compare A/B/C financial performance on the exact same OOS lockbox.
-
-    Predictions are aligned back to the prepared close series before the
-    financial engine is called. The same threshold, costs and annualization
-    assumptions are used for every experiment.
-    """
+    """Compare A/B/C financial performance on the exact same OOS lockbox."""
     data = prepare_baseline_data(df, horizon=horizon)
     experiments = run_final_lockbox_experiments(
         df,
