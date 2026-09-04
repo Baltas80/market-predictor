@@ -34,8 +34,9 @@ def _normalize_events(events: pd.DataFrame) -> pd.DataFrame:
     out = events.copy()
     out["event_time"] = pd.to_datetime(out["event_time"], utc=True)
     out["available_time"] = pd.to_datetime(out["available_time"], utc=True)
+    out["event_type"] = out["event_type"].astype(str).str.strip().str.lower()
     out["intensity"] = pd.to_numeric(out["intensity"], errors="coerce").fillna(0.0)
-    out["is_conflict"] = out["event_type"].astype(str).str.lower().isin(CONFLICT_TYPES).astype(float)
+    out["is_conflict"] = out["event_type"].isin(CONFLICT_TYPES).astype(float)
     return out.sort_values(["event_time", "available_time"]).reset_index(drop=True)
 
 
@@ -107,28 +108,27 @@ def build_event_features(
     # Exponential pressure decays from the first observable timestamp, not
     # from the event's real-world occurrence time. This is the correct
     # information-set convention for predictive modelling.
-    pressure_coeff = np.zeros(len(index) + 1, dtype=float)
-    conflict_coeff = np.zeros(len(index) + 1, dtype=float)
+    pressure = np.zeros(len(index), dtype=float)
+    conflict_pressure = np.zeros(len(index), dtype=float)
     decay_seconds = 5.0 * 86_400.0
     prediction_seconds = prediction_ns.astype(float) / 1_000_000_000.0
-    start_seconds = start_ns.astype(float) / 1_000_000_000.0
     for row, start in enumerate(starts):
         if start >= len(index):
             continue
-        end = np.searchsorted(prediction_ns, start_ns[row] + int(20 * 86_400_000_000_000), side="left")
-        end = min(end, len(index))
-        if start >= end:
+        start_time = start_ns[row] / 1_000_000_000.0
+        age_seconds = prediction_seconds[start:] - start_time
+        active = age_seconds < 20.0 * 86_400.0
+        if not np.any(active):
             continue
         intensity = float(events_norm.iloc[row]["intensity"])
         conflict = float(events_norm.iloc[row]["is_conflict"])
-        coefficient = intensity * np.exp(start_seconds[row] / decay_seconds)
-        _range_add(pressure_coeff, start, end, coefficient)
-        _range_add(conflict_coeff, start, end, coefficient * conflict)
+        contribution = intensity * np.exp(-age_seconds[active] / decay_seconds)
+        positions = np.flatnonzero(active) + start
+        pressure[positions] += contribution
+        conflict_pressure[positions] += contribution * conflict
 
-    active_pressure = np.cumsum(pressure_coeff[:-1])
-    active_conflict = np.cumsum(conflict_coeff[:-1])
-    result["event_pressure"] = active_pressure * np.exp(-prediction_seconds / decay_seconds)
-    result["conflict_pressure"] = active_conflict * np.exp(-prediction_seconds / decay_seconds)
+    result["event_pressure"] = pressure
+    result["conflict_pressure"] = conflict_pressure
     return result.fillna(0.0)
 
 
