@@ -45,7 +45,7 @@ def run_feature_ablation(
         missing = [column for column in features + [target] if column not in data.columns]
         if missing:
             raise ValueError(f"Missing columns for {name}: {missing}")
-        evaluations, predictions = walk_forward_classification(data, features, target, folds)
+        predictions, evaluations = walk_forward_classification(data, features, target, folds)
         results.append(ExperimentResult(name, tuple(features), evaluations, predictions))
     return results
 
@@ -76,7 +76,7 @@ def run_geopolitical_placebo(
         placebo[column] = np.roll(placebo[column].to_numpy(), shift)
 
     features = TECHNICAL + geopolitical_features
-    evaluations, predictions = walk_forward_classification(placebo, features, target, folds)
+    predictions, evaluations = walk_forward_classification(placebo, features, target, folds)
     return ExperimentResult(
         "technical_geopolitical_placebo",
         tuple(features),
