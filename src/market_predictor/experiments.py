@@ -6,8 +6,8 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from .backtest import walk_forward_classification
-from .model import Evaluation
+from .backtest import Fold, walk_forward_classification
+from .metrics import summarize_predictions
 
 TECHNICAL = [
     "return_1d", "return_5d", "volatility_20d", "price_to_sma20",
@@ -19,13 +19,13 @@ TECHNICAL = [
 class ExperimentResult:
     name: str
     features: tuple[str, ...]
-    evaluations: list[Evaluation]
+    evaluations: list
     predictions: pd.DataFrame
 
 
 def run_feature_ablation(
     data: pd.DataFrame,
-    folds,
+    folds: list[Fold],
     *,
     macro_features: list[str] | None = None,
     geopolitical_features: list[str] | None = None,
@@ -54,24 +54,15 @@ def run_feature_ablation(
 
 
 def summarize_experiments(results: list[ExperimentResult]) -> pd.DataFrame:
-    """Return fold-weighted aggregate metrics for model comparison."""
+    """Aggregate metrics over all OOS predictions, not over fold means."""
     rows = []
     for result in results:
-        if not result.evaluations:
-            continue
-        weights = [len(result.predictions) / len(result.evaluations)] * len(result.evaluations)
-        del weights
+        summary = summarize_predictions(result.predictions)
         rows.append({
             "experiment": result.name,
             "features": len(result.features),
-            "accuracy": sum(e.accuracy for e in result.evaluations) / len(result.evaluations),
-            "roc_auc": _nanmean([e.roc_auc for e in result.evaluations]),
-            "brier": _nanmean([e.brier for e in result.evaluations]),
+            **summary,
+            "folds": len(result.evaluations),
             "predictions": len(result.predictions),
         })
     return pd.DataFrame(rows)
-
-
-def _nanmean(values: list[float]) -> float:
-    valid = [value for value in values if pd.notna(value)]
-    return float(sum(valid) / len(valid)) if valid else float("nan")
