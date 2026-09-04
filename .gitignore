@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+.DS_Store
+
+# Local data and generated research outputs
+data/raw/
+data/cache/
+data/processed/
+outputs/
+reports/
+*.parquet
+*.feather
+*.pkl
