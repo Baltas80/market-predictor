@@ -9,6 +9,10 @@ import pandas as pd
 
 REQUIRED_EVENT_COLUMNS = {"event_time", "available_time", "event_type", "intensity"}
 DEFAULT_WINDOWS = (1, 3, 5, 10, 20)
+CONFLICT_TYPES = {
+    "war", "armed_conflict", "military_attack", "terrorism", "civil_unrest",
+    "sanction", "material_conflict", "verbal_conflict",
+}
 
 
 def validate_events(events: pd.DataFrame) -> None:
@@ -31,9 +35,7 @@ def _normalize_events(events: pd.DataFrame) -> pd.DataFrame:
     out["event_time"] = pd.to_datetime(out["event_time"], utc=True)
     out["available_time"] = pd.to_datetime(out["available_time"], utc=True)
     out["intensity"] = pd.to_numeric(out["intensity"], errors="coerce").fillna(0.0)
-    out["is_conflict"] = out["event_type"].astype(str).str.lower().isin(
-        {"war", "armed_conflict", "military_attack", "terrorism", "civil_unrest", "sanction", "material_conflict"}
-    ).astype(float)
+    out["is_conflict"] = out["event_type"].astype(str).str.lower().isin(CONFLICT_TYPES).astype(float)
     return out.sort_values(["event_time", "available_time"]).reset_index(drop=True)
 
 
@@ -51,10 +53,9 @@ def build_event_features(
 ) -> pd.DataFrame:
     """Build scalable, leakage-safe event features for exact prediction times.
 
-    An event enters the signal only at ``max(event_time, available_time)`` and
-    expires according to each requested calendar-day window. This avoids the
-    previous O(predictions × events) implementation and preserves timestamp-
-    level protection against post-close publication leakage.
+    An event enters the signal only at ``max(event_time, available_time)``.
+    Both rolling windows and decay therefore start from the first timestamp at
+    which the event is observable, preventing post-close publication leakage.
     """
     if not windows or any(window < 1 for window in windows):
         raise ValueError("windows must contain positive day counts")
@@ -85,7 +86,7 @@ def build_event_features(
         intensity_diff = np.zeros(len(index) + 1, dtype=float)
         intensity_max = np.zeros(len(index), dtype=float)
 
-        end_ns = event_ns + int(window * 86_400_000_000_000)
+        end_ns = start_ns + int(window * 86_400_000_000_000)
         ends = np.searchsorted(prediction_ns, end_ns, side="left")
         for row, (start, end) in enumerate(zip(starts, ends)):
             if start >= end or start >= len(index):
@@ -103,23 +104,24 @@ def build_event_features(
         result[f"{prefix}_intensity_sum"] = np.cumsum(intensity_diff[:-1])
         result[f"{prefix}_intensity_max"] = intensity_max
 
-    # Exponentially decayed pressure. A difference array stores the coefficient
-    # over each active interval, then the prediction-time exponential is applied.
+    # Exponential pressure decays from the first observable timestamp, not
+    # from the event's real-world occurrence time. This is the correct
+    # information-set convention for predictive modelling.
     pressure_coeff = np.zeros(len(index) + 1, dtype=float)
     conflict_coeff = np.zeros(len(index) + 1, dtype=float)
     decay_seconds = 5.0 * 86_400.0
     prediction_seconds = prediction_ns.astype(float) / 1_000_000_000.0
+    start_seconds = start_ns.astype(float) / 1_000_000_000.0
     for row, start in enumerate(starts):
         if start >= len(index):
             continue
-        end = np.searchsorted(prediction_ns, event_ns[row] + int(20 * 86_400_000_000_000), side="left")
+        end = np.searchsorted(prediction_ns, start_ns[row] + int(20 * 86_400_000_000_000), side="left")
         end = min(end, len(index))
         if start >= end:
             continue
-        event_seconds = event_ns[row] / 1_000_000_000.0
         intensity = float(events_norm.iloc[row]["intensity"])
         conflict = float(events_norm.iloc[row]["is_conflict"])
-        coefficient = intensity * np.exp(event_seconds / decay_seconds)
+        coefficient = intensity * np.exp(start_seconds[row] / decay_seconds)
         _range_add(pressure_coeff, start, end, coefficient)
         _range_add(conflict_coeff, start, end, coefficient * conflict)
 
