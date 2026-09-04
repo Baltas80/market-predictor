@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 
 from market_predictor.backtest import Fold
-from market_predictor.experiments import run_feature_ablation
+from market_predictor.experiments import run_feature_ablation, run_geopolitical_placebo
 
 
 def _data(n=80):
@@ -40,3 +40,18 @@ def test_missing_feature_is_rejected():
         run_feature_ablation(
             data, folds, macro_features=["macro"], geopolitical_features=["geo"]
         )
+
+
+def test_geopolitical_placebo_preserves_values_and_breaks_order():
+    data = _data()
+    folds = [Fold(0, 50, 50, 65)]
+    result = run_geopolitical_placebo(data, folds, geopolitical_features=["geo"], shift=7)
+    assert result.name == "technical_geopolitical_placebo"
+    assert np.array_equal(np.sort(result.features and data["geo"].to_numpy()), np.sort(data["geo"].to_numpy()))
+    assert not np.array_equal(data["geo"].to_numpy(), np.roll(data["geo"].to_numpy(), 7))
+    assert len(result.predictions) == 15
+
+
+def test_placebo_rejects_zero_shift():
+    with pytest.raises(ValueError, match="non-zero"):
+        run_geopolitical_placebo(_data(), [Fold(0, 50, 50, 65)], geopolitical_features=["geo"], shift=0)
