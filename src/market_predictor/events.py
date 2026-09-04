@@ -32,9 +32,16 @@ def _normalize_events(events: pd.DataFrame) -> pd.DataFrame:
     out["available_time"] = pd.to_datetime(out["available_time"], utc=True)
     out["intensity"] = pd.to_numeric(out["intensity"], errors="coerce").fillna(0.0)
     out["is_conflict"] = out["event_type"].astype(str).str.lower().isin(
-        {"war", "armed_conflict", "military_attack", "terrorism", "civil_unrest", "sanction"}
-    ).astype(int)
-    return out
+        {"war", "armed_conflict", "military_attack", "terrorism", "civil_unrest", "sanction", "material_conflict"}
+    ).astype(float)
+    return out.sort_values(["event_time", "available_time"]).reset_index(drop=True)
+
+
+def _range_add(target: np.ndarray, start: int, stop: int, value: float) -> None:
+    """Add a constant value to the half-open interval [start, stop)."""
+    if start < stop:
+        target[start] += value
+        target[stop] -= value
 
 
 def build_event_features(
@@ -42,49 +49,84 @@ def build_event_features(
     prediction_times: Iterable[pd.Timestamp],
     windows: tuple[int, ...] = DEFAULT_WINDOWS,
 ) -> pd.DataFrame:
-    """Build leakage-safe event features for exact prediction timestamps.
+    """Build scalable, leakage-safe event features for exact prediction times.
 
-    An event is eligible only when ``available_time <= prediction_time`` and
-    ``event_time <= prediction_time``. This is stricter than joining by date:
-    an event published after a market close cannot leak into that day's signal.
+    An event enters the signal only at ``max(event_time, available_time)`` and
+    expires according to each requested calendar-day window. This avoids the
+    previous O(predictions × events) implementation and preserves timestamp-
+    level protection against post-close publication leakage.
     """
-    if any(window < 1 for window in windows):
+    if not windows or any(window < 1 for window in windows):
         raise ValueError("windows must contain positive day counts")
 
     events_norm = _normalize_events(events)
-    index = pd.DatetimeIndex(pd.to_datetime(list(prediction_times), utc=True))
-    index = index.sort_values().unique()
+    index = pd.DatetimeIndex(pd.to_datetime(list(prediction_times), utc=True)).sort_values().unique()
     result = pd.DataFrame(index=index)
-
-    for timestamp in index:
-        eligible = events_norm[
-            (events_norm["available_time"] <= timestamp)
-            & (events_norm["event_time"] <= timestamp)
-        ].copy()
-        if eligible.empty:
-            continue
-
-        age_days = (timestamp - eligible["event_time"]).dt.total_seconds() / 86400.0
-        eligible["age_days"] = age_days
-
+    if len(index) == 0:
+        return result
+    if events_norm.empty:
+        columns = []
         for window in windows:
-            recent = eligible[eligible["age_days"] < window]
             prefix = f"events_{window}d"
-            result.loc[timestamp, f"{prefix}_count"] = float(len(recent))
-            result.loc[timestamp, f"{prefix}_conflict_count"] = float(recent["is_conflict"].sum())
-            result.loc[timestamp, f"{prefix}_intensity_sum"] = float(recent["intensity"].sum())
-            result.loc[timestamp, f"{prefix}_intensity_max"] = (
-                float(recent["intensity"].max()) if len(recent) else 0.0
-            )
+            columns += [f"{prefix}_count", f"{prefix}_conflict_count", f"{prefix}_intensity_sum", f"{prefix}_intensity_max"]
+        columns += ["event_pressure", "conflict_pressure"]
+        return pd.DataFrame(0.0, index=index, columns=columns)
 
-        decay = np.exp(-eligible["age_days"].to_numpy() / 5.0)
-        result.loc[timestamp, "event_pressure"] = float(
-            np.sum(eligible["intensity"].to_numpy() * decay)
-        )
-        result.loc[timestamp, "conflict_pressure"] = float(
-            np.sum(eligible["intensity"].to_numpy() * eligible["is_conflict"].to_numpy() * decay)
-        )
+    prediction_ns = index.view("i8")
+    available_ns = events_norm["available_time"].array.asi8
+    event_ns = events_norm["event_time"].array.asi8
+    start_ns = np.maximum(available_ns, event_ns)
+    starts = np.searchsorted(prediction_ns, start_ns, side="left")
 
+    for window in windows:
+        prefix = f"events_{window}d"
+        count_diff = np.zeros(len(index) + 1, dtype=float)
+        conflict_diff = np.zeros(len(index) + 1, dtype=float)
+        intensity_diff = np.zeros(len(index) + 1, dtype=float)
+        intensity_max = np.zeros(len(index), dtype=float)
+
+        end_ns = event_ns + int(window * 86_400_000_000_000)
+        ends = np.searchsorted(prediction_ns, end_ns, side="left")
+        for row, (start, end) in enumerate(zip(starts, ends)):
+            if start >= end or start >= len(index):
+                continue
+            end = min(end, len(index))
+            intensity = float(events_norm.iloc[row]["intensity"])
+            conflict = float(events_norm.iloc[row]["is_conflict"])
+            _range_add(count_diff, start, end, 1.0)
+            _range_add(conflict_diff, start, end, conflict)
+            _range_add(intensity_diff, start, end, intensity)
+            intensity_max[start:end] = np.maximum(intensity_max[start:end], intensity)
+
+        result[f"{prefix}_count"] = np.cumsum(count_diff[:-1])
+        result[f"{prefix}_conflict_count"] = np.cumsum(conflict_diff[:-1])
+        result[f"{prefix}_intensity_sum"] = np.cumsum(intensity_diff[:-1])
+        result[f"{prefix}_intensity_max"] = intensity_max
+
+    # Exponentially decayed pressure. A difference array stores the coefficient
+    # over each active interval, then the prediction-time exponential is applied.
+    pressure_coeff = np.zeros(len(index) + 1, dtype=float)
+    conflict_coeff = np.zeros(len(index) + 1, dtype=float)
+    decay_seconds = 5.0 * 86_400.0
+    prediction_seconds = prediction_ns.astype(float) / 1_000_000_000.0
+    for row, start in enumerate(starts):
+        if start >= len(index):
+            continue
+        end = np.searchsorted(prediction_ns, event_ns[row] + int(20 * 86_400_000_000_000), side="left")
+        end = min(end, len(index))
+        if start >= end:
+            continue
+        event_seconds = event_ns[row] / 1_000_000_000.0
+        intensity = float(events_norm.iloc[row]["intensity"])
+        conflict = float(events_norm.iloc[row]["is_conflict"])
+        coefficient = intensity * np.exp(event_seconds / decay_seconds)
+        _range_add(pressure_coeff, start, end, coefficient)
+        _range_add(conflict_coeff, start, end, coefficient * conflict)
+
+    active_pressure = np.cumsum(pressure_coeff[:-1])
+    active_conflict = np.cumsum(conflict_coeff[:-1])
+    result["event_pressure"] = active_pressure * np.exp(-prediction_seconds / decay_seconds)
+    result["conflict_pressure"] = active_conflict * np.exp(-prediction_seconds / decay_seconds)
     return result.fillna(0.0)
 
 
