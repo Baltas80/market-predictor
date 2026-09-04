@@ -5,6 +5,7 @@ from __future__ import annotations
 import pandas as pd
 
 from .backtest import Fold, make_walk_forward_folds, walk_forward_classification
+from .experiments import ExperimentResult, run_feature_ablation
 from .features import add_market_features, make_target
 
 FEATURE_COLUMNS = [
@@ -79,3 +80,45 @@ def run_final_lockbox(
 
     fold = Fold(0, train_end, train_end + horizon, n_rows)
     return walk_forward_classification(data, FEATURE_COLUMNS, "target", [fold])
+
+
+def run_final_lockbox_experiments(
+    df: pd.DataFrame,
+    *,
+    horizon: int = 5,
+    test_fraction: float = 0.2,
+    macro_features: list[str] | None = None,
+    geopolitical_features: list[str] | None = None,
+) -> list[ExperimentResult]:
+    """Run A/B/C feature experiments against one identical untouched lockbox.
+
+    A = technical, B = technical + macro, C = technical + macro +
+    geopolitical. All three use the same final chronological test block and
+    the same purge gap, making financial comparisons directly comparable.
+    """
+    if horizon < 1:
+        raise ValueError("horizon must be >= 1")
+    if not 0 < test_fraction < 0.5:
+        raise ValueError("test_fraction must be > 0 and < 0.5")
+
+    data = prepare_baseline_data(df, horizon=horizon)
+    macro_features = macro_features or []
+    geopolitical_features = geopolitical_features or []
+    required = macro_features + geopolitical_features
+    missing = [column for column in required if column not in data.columns]
+    if missing:
+        raise ValueError(f"Missing columns: {missing}")
+
+    n_rows = len(data)
+    test_size = max(1, int(n_rows * test_fraction))
+    train_end = n_rows - test_size - horizon
+    if train_end < 2:
+        raise ValueError("not enough observations for lockbox train, purge, and test")
+
+    fold = Fold(0, train_end, train_end + horizon, n_rows)
+    return run_feature_ablation(
+        data,
+        [fold],
+        macro_features=macro_features,
+        geopolitical_features=geopolitical_features,
+    )
