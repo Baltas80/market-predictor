@@ -24,9 +24,9 @@ def backtest_long_only(
 ) -> tuple[pd.DataFrame, dict[str, float]]:
     """Backtest a long/flat probability signal without execution leakage.
 
-    The signal observed at time *t* is executed for the return from *t* to
-    *t+1*. Costs are charged when the position changes. This function expects
-    predictions and prices aligned on the same chronological index.
+    The signal observed at time *t* is held for the return from *t* to *t+1*.
+    Therefore the model cannot use the next close to determine its position.
+    Costs are charged when the position changes, including the initial entry.
     """
     if not 0.0 <= threshold <= 1.0:
         raise ValueError("threshold must be between 0 and 1")
@@ -41,12 +41,17 @@ def backtest_long_only(
 
     frame = predictions[[probability_column, close_column]].copy()
     frame.index = pd.to_datetime(frame.index, utc=True)
-    frame = frame.sort_index()
+    if not frame.index.is_monotonic_increasing:
+        frame = frame.sort_index()
+    if frame.index.has_duplicates:
+        raise ValueError("prediction index must not contain duplicate timestamps")
     frame["prob_up"] = pd.to_numeric(frame[probability_column], errors="coerce")
     frame["close"] = pd.to_numeric(frame[close_column], errors="coerce")
     frame = frame.dropna(subset=["prob_up", "close"])
     if frame.empty:
         raise ValueError("No valid observations for financial backtest")
+    if ((frame["prob_up"] < 0) | (frame["prob_up"] > 1)).any():
+        raise ValueError("probabilities must be between 0 and 1")
     if (frame["close"] <= 0).any():
         raise ValueError("close prices must be positive")
 
@@ -61,14 +66,14 @@ def backtest_long_only(
     frame["benchmark_equity"] = (1.0 + frame["asset_return"]).cumprod()
 
     strategy_returns = frame["strategy_return"]
-    benchmark_returns = frame["asset_return"]
     years = len(frame) / periods_per_year
+    std = strategy_returns.std(ddof=1)
+    downside_sq_mean = float(np.mean(np.minimum(strategy_returns.to_numpy(), 0.0) ** 2))
+    downside_dev = np.sqrt(downside_sq_mean * periods_per_year)
     cagr = float(frame["strategy_equity"].iloc[-1] ** (1.0 / years) - 1.0) if years > 0 else np.nan
-    volatility = float(strategy_returns.std(ddof=1) * np.sqrt(periods_per_year)) if len(frame) > 1 else np.nan
-    downside = strategy_returns.where(strategy_returns < 0, 0.0)
-    downside_dev = float(downside.std(ddof=1) * np.sqrt(periods_per_year)) if len(frame) > 1 else np.nan
-    sharpe = float(strategy_returns.mean() / strategy_returns.std(ddof=1) * np.sqrt(periods_per_year)) if len(frame) > 1 and strategy_returns.std(ddof=1) > 0 else np.nan
-    sortino = float(strategy_returns.mean() / downside.std(ddof=1) * np.sqrt(periods_per_year)) if len(frame) > 1 and downside.std(ddof=1) > 0 else np.nan
+    volatility = float(std * np.sqrt(periods_per_year)) if len(frame) > 1 else np.nan
+    sharpe = float(strategy_returns.mean() / std * np.sqrt(periods_per_year)) if len(frame) > 1 and std > 0 else np.nan
+    sortino = float(strategy_returns.mean() / np.sqrt(downside_sq_mean) * np.sqrt(periods_per_year)) if len(frame) > 1 and downside_sq_mean > 0 else np.nan
     metrics = {
         "total_return": float(frame["strategy_equity"].iloc[-1] - 1.0),
         "cagr": cagr,
@@ -76,6 +81,7 @@ def backtest_long_only(
         "annualized_volatility": volatility,
         "sharpe": sharpe,
         "sortino": sortino,
+        "downside_deviation": float(downside_dev),
         "hit_rate": float((strategy_returns > 0).mean()),
         "benchmark_total_return": float(frame["benchmark_equity"].iloc[-1] - 1.0),
         "benchmark_max_drawdown": _max_drawdown(frame["benchmark_equity"]),
