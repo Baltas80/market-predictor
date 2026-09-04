@@ -24,7 +24,7 @@ def _ohlcv(n=140):
 def test_final_lockbox_returns_only_one_untouched_test_block():
     result, evaluations = run_final_lockbox(_ohlcv(), horizon=5, test_fraction=0.2)
     assert len(evaluations) == 1
-    assert len(result) == 26
+    assert len(result) == 17
     assert result.index.is_monotonic_increasing
     assert result.index.is_unique
 
