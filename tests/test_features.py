@@ -30,7 +30,7 @@ def test_target_horizon():
     out = sample_data()
     target = make_target(out, horizon=5)
     assert target.iloc[0] == 1
-    assert target.iloc[-1] != target.iloc[-1]  # NaN: future observation is unavailable
+    assert pd.isna(target.iloc[-1])
 
 
 def test_invalid_horizon():
