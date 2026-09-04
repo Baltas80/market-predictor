@@ -1,9 +1,10 @@
-"""Comparable out-of-sample experiments for feature ablations."""
+"""Comparable out-of-sample experiments and robustness tests."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 from .backtest import Fold, walk_forward_classification
@@ -31,11 +32,7 @@ def run_feature_ablation(
     geopolitical_features: list[str] | None = None,
     target: str = "target",
 ) -> list[ExperimentResult]:
-    """Run nested feature sets on identical chronological folds.
-
-    Keeping folds identical is essential: differences between models should
-    come from information sets, not from different train/test periods.
-    """
+    """Run nested feature sets on identical chronological folds."""
     macro_features = macro_features or []
     geopolitical_features = geopolitical_features or []
     specs = [
@@ -51,6 +48,41 @@ def run_feature_ablation(
         evaluations, predictions = walk_forward_classification(data, features, target, folds)
         results.append(ExperimentResult(name, tuple(features), evaluations, predictions))
     return results
+
+
+def run_geopolitical_placebo(
+    data: pd.DataFrame,
+    folds: list[Fold],
+    *,
+    geopolitical_features: list[str],
+    target: str = "target",
+    shift: int = 17,
+) -> ExperimentResult:
+    """Run a deterministic temporal placebo for geopolitical features.
+
+    The marginal distribution is preserved while observation order is
+    circularly shifted, breaking the original event/market alignment.
+    """
+    if not geopolitical_features:
+        raise ValueError("geopolitical_features cannot be empty")
+    if shift == 0:
+        raise ValueError("shift must be non-zero")
+    missing = [c for c in TECHNICAL + geopolitical_features + [target] if c not in data.columns]
+    if missing:
+        raise ValueError(f"Missing columns: {missing}")
+
+    placebo = data.copy()
+    for column in geopolitical_features:
+        placebo[column] = np.roll(placebo[column].to_numpy(), shift)
+
+    features = TECHNICAL + geopolitical_features
+    evaluations, predictions = walk_forward_classification(placebo, features, target, folds)
+    return ExperimentResult(
+        "technical_geopolitical_placebo",
+        tuple(features),
+        evaluations,
+        predictions,
+    )
 
 
 def summarize_experiments(results: list[ExperimentResult]) -> pd.DataFrame:
