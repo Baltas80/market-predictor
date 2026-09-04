@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from market_predictor.financial import backtest_long_only
 
@@ -11,8 +12,8 @@ def test_signal_uses_next_period_return_and_charges_turnover():
         index=index,
     )
     result, metrics = backtest_long_only(frame, transaction_cost_bps=0, slippage_bps=0)
-    assert result.iloc[0]["strategy_return"] == 0.10
-    assert result.iloc[1]["strategy_return"] == -0.0909090909
+    assert result.iloc[0]["strategy_return"] == pytest.approx(0.10)
+    assert result.iloc[1]["strategy_return"] == pytest.approx(-0.0909090909)
     assert metrics["observations"] == 4
 
 
