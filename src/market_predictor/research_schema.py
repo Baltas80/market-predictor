@@ -72,7 +72,7 @@ def validate_macro_frame(frame: pd.DataFrame) -> None:
     if not np.isfinite(data["value"].to_numpy(dtype=float)).all():
         raise ValueError("macro values must be finite")
     if (data["vintage_start"] < data["observation_date"].dt.normalize()).any():
-        raise ValueError("macro vintage_start cannot precede observation_date")
+        raise ValueError("macro vintage_start cannot be before its observation date")
     if (data["vintage_end"] < data["vintage_start"]).any():
         raise ValueError("macro vintage_end cannot precede vintage_start")
     if data.duplicated(["series_id", "observation_date", "vintage_start"]).any():
