@@ -20,14 +20,24 @@ class QualityCheck:
 
 def check_market(frame: pd.DataFrame) -> list[QualityCheck]:
     checks: list[QualityCheck] = []
+    required = ["open", "high", "low", "close", "volume"]
+    missing = [column for column in required if column not in frame.columns]
+    checks.append(QualityCheck("market_columns", not missing, "required OHLCV columns present"))
+    if missing:
+        return checks
+    if not isinstance(frame.index, pd.DatetimeIndex):
+        checks.append(QualityCheck("market_index_type", False, "market index must be DatetimeIndex"))
+        return checks
     idx = pd.DatetimeIndex(frame.index)
     checks.append(QualityCheck("market_index_unique", not idx.has_duplicates, "dates must be unique"))
     checks.append(QualityCheck("market_index_sorted", idx.is_monotonic_increasing, "dates must be chronological"))
-    required = ["open", "high", "low", "close", "volume"]
-    numeric = frame.reindex(columns=required).apply(pd.to_numeric, errors="coerce")
+    numeric = frame[required].apply(pd.to_numeric, errors="coerce")
     checks.append(QualityCheck("market_numeric", not numeric.isna().any().any(), "OHLCV must be numeric and non-null"))
-    checks.append(QualityCheck("market_nonnegative", not (numeric[["open", "high", "low", "close", "volume"]] < 0).any().any(), "OHLCV cannot be negative"))
-    checks.append(QualityCheck("market_ohlc_bounds", bool(((numeric.high >= numeric.low) & (numeric.open.between(numeric.low, numeric.high)) & (numeric.close.between(numeric.low, numeric.high))).all()), "high >= low and open/close inside the daily range"))
+    if not numeric.isna().any().any():
+        checks.append(QualityCheck("market_finite", bool(numeric.map(lambda x: pd.notna(x) and x != float("inf") and x != float("-inf")).all().all()), "OHLCV must be finite"))
+        checks.append(QualityCheck("market_positive_prices", bool((numeric[["open", "high", "low", "close"]] > 0).all().all()), "prices must be strictly positive"))
+        checks.append(QualityCheck("market_nonnegative_volume", bool((numeric["volume"] >= 0).all()), "volume cannot be negative"))
+        checks.append(QualityCheck("market_ohlc_bounds", bool(((numeric.high >= numeric.low) & numeric.open.between(numeric.low, numeric.high) & numeric.close.between(numeric.low, numeric.high)).all()), "high >= low and open/close inside the daily range"))
     return checks
 
 
@@ -74,7 +84,4 @@ def quality_report(*, market: pd.DataFrame | None = None, macro: pd.DataFrame | 
         checks.extend(check_macro(macro))
     if events is not None:
         checks.extend(check_events(events))
-    return {
-        "passed": all(check.passed for check in checks),
-        "checks": [check.as_dict() for check in checks],
-    }
+    return {"passed": all(check.passed for check in checks), "checks": [check.as_dict() for check in checks]}
