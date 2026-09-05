@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
-from .benchmarks import random_signal
 from .financial import backtest_long_only
 
 COST_BPS = (0.0, 5.0, 10.0)
 SLIPPAGE_BPS = (0.0, 5.0)
+
+
+def _random_probabilities(size: int, seed: int) -> np.ndarray:
+    if size <= 0:
+        raise ValueError("size must be positive")
+    return np.random.default_rng(seed).random(size)
 
 
 def evaluate_financial_matrix(
@@ -22,31 +28,27 @@ def evaluate_financial_matrix(
     slippage_bps: tuple[float, ...] = SLIPPAGE_BPS,
     random_seed: int = 42,
 ) -> pd.DataFrame:
-    """Evaluate fixed OOS predictions across a pre-declared cost/slippage grid.
+    """Evaluate fixed OOS predictions across a pre-declared 3x2 cost grid.
 
-    No model is retrained and no threshold is selected from the resulting
-    table. The random baseline is generated once on the common prediction
-    index, making it a comparator rather than a tuning candidate.
+    Predictions are consumed as-is. This function never retrains, tunes a
+    threshold, changes the lockbox or selects a winner. Buy-and-hold and a
+    deterministic random signal are reference strategies only.
     """
     if not predictions:
         raise ValueError("at least one prediction set is required")
     if not costs_bps or not slippage_bps:
         raise ValueError("cost and slippage grids cannot be empty")
-    reference_index = None
+    if "close" not in benchmark.columns:
+        raise ValueError("benchmark must contain close")
+    reference_index = benchmark.index
     for name, frame in predictions.items():
-        if probability_column not in frame.columns:
-            raise ValueError(f"{name} missing {probability_column}")
-        if reference_index is None:
-            reference_index = frame.index
-        elif not frame.index.equals(reference_index):
-            raise ValueError("all experiments must use the same OOS index")
-    if probability_column not in benchmark.columns or "close" not in benchmark.columns:
-        raise ValueError("benchmark must contain probability and close columns")
-    if not benchmark.index.equals(reference_index):
-        raise ValueError("benchmark must use the same OOS index")
+        if probability_column not in frame.columns or "close" not in frame.columns:
+            raise ValueError(f"{name} must contain {probability_column} and close")
+        if not frame.index.equals(reference_index):
+            raise ValueError("all experiments and benchmark must use the same OOS index")
 
     random_frame = benchmark[["close"]].copy()
-    random_frame[probability_column] = random_signal(len(random_frame), seed=random_seed)
+    random_frame[probability_column] = _random_probabilities(len(random_frame), random_seed)
     all_predictions = {**predictions, "random": random_frame}
 
     rows: list[dict[str, float | str]] = []
@@ -68,14 +70,12 @@ def evaluate_financial_matrix(
                     **metrics,
                 })
 
-    # Buy-and-hold is a fixed, model-free comparator. It is reported once
-    # against the common OOS close series rather than duplicated per model.
     close = benchmark["close"].astype(float)
     asset_returns = close.shift(-1).dropna()
     buy_hold_total = float((1.0 + asset_returns).prod() - 1.0)
-    for row in rows:
-        row["buy_and_hold_total_return"] = buy_hold_total
     result = pd.DataFrame(rows)
+    result["buy_and_hold_total_return"] = buy_hold_total
+    result["benchmark"] = "buy_and_hold"
     return result.sort_values(["experiment", "transaction_cost_bps", "slippage_bps"]).reset_index(drop=True)
 
 
@@ -83,8 +83,11 @@ def period_stability(
     backtest: pd.DataFrame,
     *,
     periods: dict[str, tuple[str, str]],
+    periods_per_year: int = 252,
 ) -> pd.DataFrame:
-    """Recompute financial metrics over pre-declared chronological periods."""
+    """Recompute fixed-backtest metrics over pre-declared chronological periods."""
+    if periods_per_year <= 0:
+        raise ValueError("periods_per_year must be positive")
     rows = []
     for name, (start, end) in periods.items():
         subset = backtest.loc[(backtest.index >= pd.Timestamp(start)) & (backtest.index <= pd.Timestamp(end))]
@@ -102,8 +105,8 @@ def period_stability(
             "observations": len(subset),
             "total_return": float(equity.iloc[-1] - 1.0),
             "max_drawdown": float((equity / equity.cummax() - 1.0).min()),
-            "sharpe": float(returns.mean() / std * (252 ** 0.5)) if len(returns) > 1 and std > 0 else float("nan"),
-            "sortino": float(returns.mean() / downside * (252 ** 0.5)) if len(returns) > 1 and downside > 0 else float("nan"),
+            "sharpe": float(returns.mean() / std * np.sqrt(periods_per_year)) if len(returns) > 1 and std > 0 else float("nan"),
+            "sortino": float(returns.mean() / downside * np.sqrt(periods_per_year)) if len(returns) > 1 and downside > 0 else float("nan"),
             "turnover": float(subset["position_change"].sum()),
         })
     return pd.DataFrame(rows)
