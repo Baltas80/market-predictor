@@ -16,7 +16,12 @@ def buy_and_hold_returns(close: pd.Series) -> pd.Series:
 
 def random_signal(probabilities: pd.Series, *, seed: int = 42) -> pd.Series:
     """Create a deterministic 0/1 baseline with the same observation index."""
-    if not 0.0 <= float(probabilities.mean()) <= 1.0:
-        raise ValueError("probabilities must be numeric probabilities")
+    values = pd.to_numeric(probabilities, errors="coerce")
+    if values.empty or not values.notna().all() or not values.between(0.0, 1.0).all():
+        raise ValueError("probabilities must contain only finite numeric values in [0, 1]")
     rng = np.random.default_rng(seed)
-    return pd.Series(rng.integers(0, 2, size=len(probabilities)), index=probabilities.index, name="random_signal")
+    return pd.Series(
+        rng.integers(0, 2, size=len(values)),
+        index=values.index,
+        name="random_signal",
+    )
