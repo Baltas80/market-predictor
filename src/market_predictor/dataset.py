@@ -40,11 +40,19 @@ def load_market(path: str | Path) -> pd.DataFrame:
 
 
 def load_fred_vintage(path: str | Path) -> pd.DataFrame:
-    frame = pd.read_csv(path, parse_dates=["date", "realtime_start", "realtime_end"])
+    """Load FRED vintages while allowing realtime_end to be absent.
+
+    realtime_start is the minimum metadata required for point-in-time alignment;
+    realtime_end is optional because exported/test vintage tables may omit it.
+    """
+    frame = pd.read_csv(path)
     required = {"date", "value", "realtime_start"}
     missing = required - set(frame.columns)
     if missing:
         raise ValueError(f"FRED file missing columns: {sorted(missing)}")
+    for column in ("date", "realtime_start", "realtime_end"):
+        if column in frame.columns:
+            frame[column] = pd.to_datetime(frame[column], errors="coerce")
     frame["value"] = pd.to_numeric(frame["value"], errors="coerce")
     return frame.dropna(subset=["date", "value", "realtime_start"])
 
