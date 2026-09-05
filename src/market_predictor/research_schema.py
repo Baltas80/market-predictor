@@ -1,20 +1,11 @@
-"""Definitive point-in-time schema for market, macro and event research data.
-
-The schema makes three different notions of time explicit:
-- event_time: when the underlying event happened;
-- published_at: when the source published the information;
-- available_at: when the observation is admitted to the model information set.
-
-Keeping these timestamps separate prevents publication/availability time from
-being accidentally inferred from the event date.
-"""
+"""Definitive point-in-time schema for market, macro and event research data."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterable
 
+import numpy as np
 import pandas as pd
 
 
@@ -40,22 +31,14 @@ def validate_market_frame(frame: pd.DataFrame) -> None:
     missing = set(MARKET_COLUMNS) - set(frame.columns)
     if missing:
         raise ValueError(f"market data missing columns: {sorted(missing)}")
-    if not isinstance(frame.index, pd.DatetimeIndex):
-        raise TypeError("market index must be a DatetimeIndex")
-    if frame.index.tz is None:
-        raise ValueError("market index must be timezone-aware")
+    if not isinstance(frame.index, pd.DatetimeIndex) or frame.index.tz is None:
+        raise TypeError("market index must be a timezone-aware DatetimeIndex")
     if not frame.index.is_monotonic_increasing or frame.index.has_duplicates:
         raise ValueError("market index must be unique and chronological")
     numeric = frame.loc[:, list(MARKET_COLUMNS)].apply(pd.to_numeric, errors="coerce")
-    if not numeric.map(lambda column: column.notna().all() and column.map(pd.api.types.is_number).all()).all():
-        raise ValueError("market OHLCV must be numeric and finite")
-    if not numeric.apply(lambda column: column.map(pd.notna).all()).all():
-        raise ValueError("market OHLCV cannot contain missing values")
-    if not numeric.apply(lambda column: column.map(pd.api.types.is_number).all()).all():
-        raise ValueError("market OHLCV must be numeric")
-    if not numeric.apply(lambda column: column.map(lambda value: pd.notna(value) and float(value) == float(value) and abs(float(value)) != float('inf')).all()).all():
-        raise ValueError("market OHLCV must be finite")
-    if (numeric["close"] <= 0).any() or (numeric["open"] <= 0).any() or (numeric["high"] <= 0).any() or (numeric["low"] <= 0).any():
+    if numeric.isna().any().any() or not np.isfinite(numeric.to_numpy(dtype=float)).all():
+        raise ValueError("market OHLCV must be finite numeric values")
+    if (numeric[["open", "high", "low", "close"]] <= 0).any().any():
         raise ValueError("market prices must be positive")
     if (numeric["volume"] < 0).any():
         raise ValueError("market volume must be nonnegative")
@@ -75,12 +58,13 @@ def validate_macro_frame(frame: pd.DataFrame) -> None:
     data["value"] = pd.to_numeric(data["value"], errors="coerce")
     if data[list(MACRO_COLUMNS)].isna().any().any():
         raise ValueError("macro schema contains invalid or missing values")
+    if not np.isfinite(data["value"].to_numpy(dtype=float)).all():
+        raise ValueError("macro values must be finite")
     if (data["vintage_start"] < data["observation_date"].dt.normalize()).any():
         raise ValueError("macro vintage_start cannot precede observation_date")
     if (data["vintage_end"] < data["vintage_start"]).any():
         raise ValueError("macro vintage_end cannot precede vintage_start")
-    keys = ["series_id", "observation_date", "vintage_start"]
-    if data.duplicated(keys).any():
+    if data.duplicated(["series_id", "observation_date", "vintage_start"]).any():
         raise ValueError("duplicate macro vintage keys")
 
 
@@ -92,31 +76,58 @@ def validate_event_frame(frame: pd.DataFrame) -> None:
     for column in ("event_time", "published_at", "available_at"):
         data[column] = pd.to_datetime(data[column], utc=True, errors="coerce")
     data["severity"] = pd.to_numeric(data["severity"], errors="coerce")
-    if data[["event_id", "source_id", "category"]].isna().any().any():
-        raise ValueError("event identifiers and category are required")
-    if data[["event_time", "published_at", "available_at", "severity"]].isna().any().any():
-        raise ValueError("event timestamps and severity must be valid")
+    if data[["event_id", "source_id", "category", "event_time", "published_at", "available_at", "severity"]].isna().any().any():
+        raise ValueError("event identifiers, timestamps and severity are required")
     if (data["available_at"] < data["published_at"]).any():
         raise ValueError("available_at cannot precede published_at")
+    if (data["published_at"] < data["event_time"]).any():
+        raise ValueError("published_at cannot precede event_time")
     if (data["severity"] < 0).any() or (data["severity"] > 1).any():
         raise ValueError("event severity must be between 0 and 1")
     if data["event_id"].duplicated().any():
         raise ValueError("event_id must be unique after deduplication")
 
 
-def deduplicate_events(frame: pd.DataFrame) -> pd.DataFrame:
-    """Deduplicate by source identity while retaining the earliest availability."""
-    validate_event_frame(frame)
+def normalize_event_sources(frame: pd.DataFrame, *, source_id: str) -> pd.DataFrame:
+    """Normalize source-specific event columns into the definitive event schema."""
     data = frame.copy()
+    if "event_id" not in data:
+        raise ValueError("source event data requires event_id")
+    if "event_time" not in data:
+        if "date" in data:
+            data["event_time"] = data["date"]
+        elif "sql_date" in data:
+            data["event_time"] = data["sql_date"]
+        else:
+            data["event_time"] = data.get("published_at")
+    if "published_at" not in data:
+        raise ValueError("source event data requires published_at")
+    if "available_at" not in data:
+        data["available_at"] = data["published_at"]
+    data["source_id"] = source_id
+    defaults = {
+        "category": "political_crisis", "severity": 0.0, "country": pd.NA,
+        "entity": pd.NA, "sector": pd.NA, "duration_days": 0.0,
+        "media_intensity": 0.0, "surprise": 0.0,
+    }
+    for column, default in defaults.items():
+        if column not in data:
+            data[column] = default
+    output = data[list(EVENT_COLUMNS)].copy()
     for column in ("event_time", "published_at", "available_at"):
-        data[column] = pd.to_datetime(data[column], utc=True)
-    data = data.sort_values(["event_id", "available_at", "published_at"])
+        output[column] = pd.to_datetime(output[column], utc=True, errors="coerce")
+    return output
+
+
+def deduplicate_events(frame: pd.DataFrame) -> pd.DataFrame:
+    """Deduplicate by event_id, retaining the earliest available record."""
+    data = frame.copy()
     if data["event_id"].duplicated().any():
-        first = data.groupby("event_id", sort=False, as_index=False).first()
-        first = first.sort_values("available_at").reset_index(drop=True)
-        validate_event_frame(first)
-        return first
-    return data.reset_index(drop=True)
+        data = data.sort_values(["event_id", "available_at", "published_at"])
+        data = data.groupby("event_id", sort=False, as_index=False).first()
+    data = data.sort_values(["available_at", "event_id"]).reset_index(drop=True)
+    validate_event_frame(data)
+    return data
 
 
 def admitted_events(events: pd.DataFrame, decision_time: datetime | str) -> pd.DataFrame:
