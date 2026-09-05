@@ -53,7 +53,7 @@ def stage_historical(
     """Execute all staging phases and admit data only after Historical Gate.
 
     The function is dependency-injected for deterministic CI tests. Production
-    callers use the real Stooq/FRED/GDELT/SEC adapters by default.
+    callers use the real Stooq/Yahoo, FRED, GDELT and SEC adapters by default.
     """
     if not fred_api_key:
         raise RuntimeError("FRED_API_KEY is required for historical staging")
@@ -74,15 +74,23 @@ def stage_historical(
 
     market = market_fetcher(DATASET_START.isoformat(), DATASET_END.isoformat())
     if market.empty:
-        raise RuntimeError("Stooq returned no market observations")
-    _write_frame(market, raw_dir / "market_stooq.csv", index=True)
+        raise RuntimeError("Market adapter returned no market observations")
+    market_source_id = str(market.attrs.get("source_id", "Stooq_SPX"))
+    if market_source_id == "YahooFinance_GSPC":
+        market_source_uri = "https://query1.finance.yahoo.com/v8/finance/chart/^GSPC"
+        limitations.append(
+            "Stooq market retrieval failed or returned invalid OHLCV; S&P 500 OHLCV was retrieved from Yahoo Finance chart API fallback"
+        )
+    else:
+        market_source_uri = "https://stooq.com/q/d/l/"
+    _write_frame(market, raw_dir / "market.csv", index=True)
     stage_map["download"]["status"] = "complete"
     stage_map["raw"]["status"] = "complete"
     market_manifest = _coverage_manifest(
         market,
-        source_id="Stooq_SPX",
+        source_id=market_source_id,
         source_type="market",
-        source_uri="https://stooq.com/q/d/l/",
+        source_uri=market_source_uri,
         availability_policy="daily cash-session close represented in UTC",
     )
     manifests.append(market_manifest)
