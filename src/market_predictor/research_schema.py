@@ -76,11 +76,15 @@ def validate_event_frame(frame: pd.DataFrame) -> None:
     for column in ("event_time", "published_at", "available_at"):
         data[column] = pd.to_datetime(data[column], utc=True, errors="coerce")
     data["severity"] = pd.to_numeric(data["severity"], errors="coerce")
-    if data[["event_id", "source_id", "category", "event_time", "published_at", "available_at", "severity"]].isna().any().any():
-        raise ValueError("event identifiers, timestamps and severity are required")
-    if (data["available_at"] < data["published_at"]).any():
+    required = ["event_id", "source_id", "category", "event_time", "available_at", "severity"]
+    if data[required].isna().any().any():
+        raise ValueError("event identifiers, event_time, available_at and severity are required")
+    if (data["available_at"] < data["event_time"]).any():
+        raise ValueError("available_at cannot precede event_time")
+    published = data["published_at"].notna()
+    if (data.loc[published, "available_at"] < data.loc[published, "published_at"]).any():
         raise ValueError("available_at cannot precede published_at")
-    if (data["published_at"] < data["event_time"]).any():
+    if (data.loc[published, "published_at"] < data.loc[published, "event_time"]).any():
         raise ValueError("published_at cannot precede event_time")
     if (data["severity"] < 0).any() or (data["severity"] > 1).any():
         raise ValueError("event severity must be between 0 and 1")
@@ -101,7 +105,7 @@ def normalize_event_sources(frame: pd.DataFrame, *, source_id: str) -> pd.DataFr
         else:
             data["event_time"] = data.get("published_at")
     if "published_at" not in data:
-        raise ValueError("source event data requires published_at")
+        data["published_at"] = pd.NaT
     if "available_at" not in data:
         data["available_at"] = data["published_at"]
     data["source_id"] = source_id
@@ -123,7 +127,7 @@ def deduplicate_events(frame: pd.DataFrame) -> pd.DataFrame:
     """Deduplicate by event_id, retaining the earliest available record."""
     data = frame.copy()
     if data["event_id"].duplicated().any():
-        data = data.sort_values(["event_id", "available_at", "published_at"])
+        data = data.sort_values(["event_id", "available_at", "published_at"], na_position="last")
         data = data.groupby("event_id", sort=False, as_index=False).first()
     data = data.sort_values(["available_at", "event_id"]).reset_index(drop=True)
     validate_event_frame(data)
