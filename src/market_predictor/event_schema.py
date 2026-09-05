@@ -25,17 +25,19 @@ class EventCategory(str, Enum):
 
 @dataclass(frozen=True)
 class MarketEvent:
-    """An event known to the market from its publication timestamp onward.
+    """Event with explicit occurrence, publication and information-availability times.
 
-    ``published_at`` is the time at which the information became available to
-    market participants. Later confirmation or discovery timestamps must not
-    replace it in a backtest.
+    ``available_at`` is the only timestamp permitted to gate model information.
+    For legacy events it defaults to ``published_at``; real historical sources
+    should populate the field from a source-specific availability rule.
     """
 
     event_id: str
     category: EventCategory
     published_at: datetime | str
     severity: float
+    event_time: datetime | str | None = None
+    available_at: datetime | str | None = None
     country: str | None = None
     entity: str | None = None
     sector: str | None = None
@@ -44,9 +46,23 @@ class MarketEvent:
     surprise: float = 0.0
 
     def __post_init__(self) -> None:
+        if not self.event_id:
+            raise ValueError("event_id is required")
         if not 0.0 <= float(self.severity) <= 1.0:
             raise ValueError("severity must be between 0 and 1")
         if float(self.duration_days) < 0:
             raise ValueError("duration_days must be >= 0")
         if float(self.media_intensity) < 0:
             raise ValueError("media_intensity must be >= 0")
+        published = datetime.fromisoformat(str(self.published_at).replace("Z", "+00:00")) if isinstance(self.published_at, str) else self.published_at
+        available = self.available_at
+        if available is None:
+            available = published
+            object.__setattr__(self, "available_at", published)
+        if available is not None and published is not None:
+            if available < published:
+                raise ValueError("available_at cannot precede published_at")
+        if self.event_time is not None:
+            event_time = datetime.fromisoformat(str(self.event_time).replace("Z", "+00:00")) if isinstance(self.event_time, str) else self.event_time
+            if event_time > published:
+                raise ValueError("event_time cannot be after published_at")

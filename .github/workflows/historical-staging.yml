@@ -1,0 +1,43 @@
+name: Historical Staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_gdelt:
+        description: "Retrieve GDELT daily exports from 2015-01-01"
+        required: true
+        default: true
+        type: boolean
+      include_sec:
+        description: "Retrieve SEC litigation RSS snapshot"
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package
+        run: pip install -e "."
+      - name: Execute historical staging
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: |
+          args="--execute"
+          if [ "${{ inputs.include_gdelt }}" != "true" ]; then args="$args --skip-gdelt"; fi
+          if [ "${{ inputs.include_sec }}" != "true" ]; then args="$args --skip-sec"; fi
+          python scripts/ingest_historical.py --output-dir data/historical $args
+      - name: Upload staging artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: historical-staging-2000-2025
+          path: data/historical/
+          if-no-files-found: error
+          retention-days: 14

@@ -3,10 +3,11 @@ import pandas as pd
 
 from market_predictor.event_schema import EventCategory, MarketEvent
 from market_predictor.pipeline import run_final_lockbox_event_experiments
+from market_predictor.session_calendar import session_table
 
 
 def _market_data(n: int = 160) -> pd.DataFrame:
-    index = pd.date_range("2020-01-01", periods=n, freq="D")
+    index = session_table("2020-01-02", "2021-01-31")["close_utc"].iloc[:n]
     close = 100 + np.cumsum(np.sin(np.arange(n) / 7.0) + 0.2)
     return pd.DataFrame(
         {
@@ -16,7 +17,7 @@ def _market_data(n: int = 160) -> pd.DataFrame:
             "close": close,
             "volume": np.full(n, 1000.0),
         },
-        index=index,
+        index=pd.DatetimeIndex(index),
     )
 
 

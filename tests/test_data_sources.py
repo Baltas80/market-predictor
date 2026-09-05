@@ -8,6 +8,7 @@ from market_predictor.data_sources import (
     align_fred_point_in_time,
     gdelt_events_to_market_events,
 )
+from market_predictor.research_schema import normalize_event_sources, validate_event_frame
 
 
 def test_gdelt_category_uses_exact_sanctions_code() -> None:
@@ -22,6 +23,7 @@ def test_gdelt_event_conversion_deduplicates_and_preserves_availability() -> Non
     frame = pd.DataFrame(
         {
             "global_event_id": ["1", "1", "2"],
+            "sql_date": pd.to_datetime(["2020-01-01"] * 2 + ["2020-01-02"], utc=True),
             "category": ["war_conflict", "war_conflict", "social_unrest"],
             "date_added": pd.to_datetime(
                 ["2020-01-01T12:00:00Z", "2020-01-01T12:00:00Z", "2020-01-02T12:00:00Z"],
@@ -32,14 +34,32 @@ def test_gdelt_event_conversion_deduplicates_and_preserves_availability() -> Non
             "actor2_name": ["ACTOR", "ACTOR", "ACTOR2"],
             "num_sources": [5, 5, 2],
             "surprise": [0.0, 0.0, 0.0],
+            "source_url": ["https://example.test/1"] * 2 + ["https://example.test/2"],
         }
     )
     result = gdelt_events_to_market_events(frame)
     assert len(result) == 2
-    assert result.iloc[0]["published_at"] == "2020-01-01T12:00:00Z"
+    assert pd.isna(result.iloc[0]["published_at"])
+    assert result.iloc[0]["available_at"] == pd.Timestamp("2020-01-01T12:00:00Z")
+    assert result.iloc[0]["event_time"] == pd.Timestamp("2020-01-01T00:00:00Z")
     assert result.iloc[0]["event_id"] == "1"
     assert result.iloc[0]["source"] == "GDELT_2_Event_Database"
     assert result.iloc[0]["availability_proxy"] == "DATEADDED"
+
+
+def test_unknown_publication_is_valid_when_availability_is_known() -> None:
+    event = normalize_event_sources(
+        pd.DataFrame(
+            {
+                "event_id": ["g1"],
+                "event_time": pd.to_datetime(["2020-01-01"], utc=True),
+                "published_at": [pd.NaT],
+                "available_at": pd.to_datetime(["2020-01-01T12:00:00Z"], utc=True),
+            }
+        ),
+        source_id="GDELT_2_Event_Database",
+    )
+    validate_event_frame(event)
 
 
 def test_fred_alignment_does_not_use_same_day_vintage_by_default() -> None:

@@ -3,12 +3,13 @@ import pandas as pd
 import pytest
 
 from market_predictor.pipeline import prepare_baseline_data, run_final_lockbox
+from market_predictor.session_calendar import session_table
 
 
 def _ohlcv(n=140):
     rng = np.random.default_rng(7)
     close = 100 * np.cumprod(1 + rng.normal(0.0005, 0.01, n))
-    index = pd.date_range("2020-01-01", periods=n, freq="D", tz="UTC")
+    index = session_table("2020-01-02", "2020-12-31")["close_utc"].iloc[:n]
     return pd.DataFrame(
         {
             "open": close * (1 + rng.normal(0, 0.002, n)),
@@ -17,7 +18,7 @@ def _ohlcv(n=140):
             "close": close,
             "volume": rng.integers(1000, 10000, n),
         },
-        index=index,
+        index=pd.DatetimeIndex(index),
     )
 
 
