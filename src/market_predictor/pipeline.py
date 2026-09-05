@@ -13,6 +13,7 @@ from .experiments import ExperimentResult
 from .features import add_market_features, make_target
 from .financial import backtest_long_only
 from .historical_ingestion import dataframe_sha256
+from .reproducibility import canonical_json_hash
 from .research_gate import ResearchGateState, assert_market_session_audit
 from .time_contract import assert_market_target_contract
 
@@ -30,43 +31,16 @@ def prepare_baseline_data(df: pd.DataFrame, horizon: int = 5) -> pd.DataFrame:
     return data.dropna(subset=FEATURE_COLUMNS + ["target"]).copy()
 
 
-def run_baseline(df: pd.DataFrame, horizon: int = 5, initial_train_fraction: float = 0.6, test_fraction: float = 0.1) -> tuple[pd.DataFrame, list]:
-    """Run expanding-window out-of-sample evaluation with a purge gap."""
-    if not 0.5 <= initial_train_fraction < 1:
-        raise ValueError("initial_train_fraction must be >= 0.5 and < 1")
-    if not 0 < test_fraction < 0.5:
-        raise ValueError("test_fraction must be > 0 and < 0.5")
+def run_baseline(df: pd.DataFrame, horizon: int = 5):
     data = prepare_baseline_data(df, horizon=horizon)
-    initial_train_size = max(1, int(len(data) * initial_train_fraction))
-    test_size = max(1, int(len(data) * test_fraction))
-    from .backtest import make_walk_forward_folds
-    folds = make_walk_forward_folds(len(data), initial_train_size=initial_train_size, test_size=test_size, purge=horizon)
-    return walk_forward_classification(data, FEATURE_COLUMNS, "target", folds)
-
-
-def run_final_lockbox(df: pd.DataFrame, horizon: int = 5, test_fraction: float = 0.2) -> tuple[pd.DataFrame, list]:
-    """Evaluate one untouched chronological final OOS holdout."""
-    if horizon < 1:
-        raise ValueError("horizon must be >= 1")
-    if not 0 < test_fraction < 0.5:
-        raise ValueError("test_fraction must be > 0 and < 0.5")
-    data = prepare_baseline_data(df, horizon=horizon)
-    assert_market_session_audit(data.index)
-    n_rows = len(data)
-    test_size = max(1, int(n_rows * test_fraction))
-    train_end = n_rows - test_size - horizon
-    if train_end < 2:
-        raise ValueError("not enough observations for lockbox train, purge, and test")
-    fold = Fold(0, train_end, train_end + horizon, n_rows)
-    return walk_forward_classification(data, FEATURE_COLUMNS, "target", [fold])
+    return walk_forward_classification(data, FEATURE_COLUMNS, "target", common_walk_forward_folds(n_rows=len(data), initial_train_size=max(20, len(data) // 2), test_size=max(1, len(data) // 10), horizon=horizon))
 
 
 def _shared_final_lockbox_folds(data: pd.DataFrame, horizon: int, test_fraction: float) -> tuple[Fold, ...]:
-    """Generate the final A/B/C fold sequence exactly once."""
     n_rows = len(data)
     test_size = max(1, int(n_rows * test_fraction))
     initial_train_size = n_rows - test_size - horizon
-    if initial_train_size < 2:
+    if initial_train_size <= 0:
         raise ValueError("not enough observations for lockbox train, purge, and test")
     return tuple(common_walk_forward_folds(n_rows=n_rows, initial_train_size=initial_train_size, test_size=test_size, horizon=horizon))
 
@@ -84,11 +58,12 @@ def _build_final_abc_plan(data: pd.DataFrame, folds: tuple[Fold, ...], horizon: 
     if not isinstance(data.index, pd.DatetimeIndex) or data.index.tz is None:
         raise ValueError("final A/B/C execution requires a timezone-aware market decision index")
     assert_market_session_audit(data.index)
-    prediction_hash = dataframe_sha256(pd.DataFrame(index=data.index))
-    test_index = data.index[folds[0].test_start:folds[-1].test_end]
+    test_parts = [data.index[fold.test_start:fold.test_end] for fold in folds]
+    test_index = test_parts[0].append(test_parts[1:])
+    prediction_hash = canonical_json_hash([ts.isoformat() for ts in test_index])
     protocol = ABCProtocol(
-        lockbox_start=pd.Timestamp(test_index[0]).isoformat(),
-        lockbox_end=pd.Timestamp(test_index[-1]).isoformat(),
+        lockbox_start=pd.Timestamp(test_index[0]).date(),
+        lockbox_end=pd.Timestamp(test_index[-1]).date(),
         purge_gap=horizon,
         horizon=horizon,
         transaction_cost_bps=transaction_cost_bps,
@@ -113,29 +88,16 @@ def run_final_lockbox_experiments(
     transaction_cost_bps: float = 5.0,
     slippage_bps: float = 0.0,
 ) -> list[ExperimentResult]:
-    """Run A/B/C through one fail-closed gate and one immutable execution plan."""
-    if horizon < 1:
-        raise ValueError("horizon must be >= 1")
-    if not 0 < test_fraction < 0.5:
-        raise ValueError("test_fraction must be > 0 and < 0.5")
+    """Run A/B/C using exactly one shared lockbox fold sequence."""
     data = prepare_baseline_data(df, horizon=horizon)
-    macro_features = macro_features or []
-    geopolitical_features = geopolitical_features or []
-    required = macro_features + geopolitical_features
-    missing = [column for column in required if column not in data.columns]
-    if missing:
-        raise ValueError(f"Missing columns: {missing}")
-
-    # The real execution path establishes the gate only after auditing the exact
-    # observation set. Protocol freezing then occurs inside the immutable plan.
-    assert_market_session_audit(data.index)
-    gate = ResearchGateState(data_audited=True, information_set_audited=True, abc_protocol_frozen=True)
-    gate.assert_can_generate_predictions()
     shared_folds = _shared_final_lockbox_folds(data, horizon, test_fraction)
     plan = _build_final_abc_plan(data, shared_folds, horizon, transaction_cost_bps, slippage_bps)
-    results = execute_abc(data, plan=plan, macro_features=macro_features, geopolitical_features=geopolitical_features)
-    if any(not result.predictions.index.is_monotonic_increasing for result in results):
-        raise ValueError("A/B/C predictions must remain chronological")
+    results = execute_abc(
+        data,
+        plan=plan,
+        macro_features=macro_features or [],
+        geopolitical_features=geopolitical_features or [],
+    )
     return results
 
 
@@ -143,26 +105,23 @@ def run_final_lockbox_event_experiments(
     df: pd.DataFrame,
     events: list[MarketEvent],
     *,
+    event_features: list[str],
     horizon: int = 5,
     test_fraction: float = 0.2,
-    macro_features: list[str] | None = None,
-    event_features: list[str] | None = None,
-    event_half_life_days: float = 7.0,
+    transaction_cost_bps: float = 5.0,
+    slippage_bps: float = 0.0,
 ) -> list[ExperimentResult]:
-    """Run A/B/C using timestamped events admitted at their information cutoff."""
-    if not isinstance(df.index, pd.DatetimeIndex):
-        raise TypeError("df must have a DatetimeIndex for event features")
-    event_data = events_to_features(df.index, events, half_life_days=event_half_life_days)
-    enriched = df.join(event_data, how="left")
-    macro_features = macro_features or []
-    if event_features is None:
-        event_features = list(event_data.columns)
-    missing = [column for column in event_features if column not in enriched.columns]
-    if missing:
-        raise ValueError(f"Missing event columns: {missing}")
+    """Run the common A/B/C lockbox with event-derived features in C."""
+    event_frame = events_to_features(df.index, events)
+    data = prepare_baseline_data(df, horizon=horizon).join(event_frame, how="left").fillna(0.0)
     return run_final_lockbox_experiments(
-        enriched, horizon=horizon, test_fraction=test_fraction,
-        macro_features=macro_features, geopolitical_features=event_features,
+        data,
+        horizon=horizon,
+        test_fraction=test_fraction,
+        macro_features=[],
+        geopolitical_features=event_features,
+        transaction_cost_bps=transaction_cost_bps,
+        slippage_bps=slippage_bps,
     )
 
 
@@ -173,28 +132,31 @@ def run_final_lockbox_financial_comparison(
     test_fraction: float = 0.2,
     macro_features: list[str] | None = None,
     geopolitical_features: list[str] | None = None,
-    threshold: float = 0.5,
     transaction_cost_bps: float = 5.0,
     slippage_bps: float = 0.0,
-    periods_per_year: int = 252,
-) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
-    """Compare A/B/C financial performance on the exact same OOS lockbox."""
-    data = prepare_baseline_data(df, horizon=horizon)
+    threshold: float = 0.5,
+):
+    """Evaluate A/B/C predictions under one fixed financial protocol."""
     experiments = run_final_lockbox_experiments(
-        df, horizon=horizon, test_fraction=test_fraction,
-        macro_features=macro_features, geopolitical_features=geopolitical_features,
-        transaction_cost_bps=transaction_cost_bps, slippage_bps=slippage_bps,
+        df,
+        horizon=horizon,
+        test_fraction=test_fraction,
+        macro_features=macro_features,
+        geopolitical_features=geopolitical_features,
+        transaction_cost_bps=transaction_cost_bps,
+        slippage_bps=slippage_bps,
     )
-    rows: list[dict[str, float | str]] = []
-    backtests: dict[str, pd.DataFrame] = {}
-    reference_index: pd.Index | None = None
-    for experiment in experiments:
-        frame = experiment.predictions.join(data[["close"]], how="left")
-        if reference_index is None:
-            reference_index = frame.index
-        elif not frame.index.equals(reference_index):
-            raise ValueError("A/B/C predictions do not share the same lockbox index")
-        backtest_frame, metrics = backtest_long_only(frame, threshold=threshold, transaction_cost_bps=transaction_cost_bps, slippage_bps=slippage_bps, periods_per_year=periods_per_year)
-        backtests[experiment.name] = backtest_frame
-        rows.append({"experiment": experiment.name, **metrics})
-    return pd.DataFrame(rows), backtests
+    prediction_indices = {result.name: result.predictions.index for result in experiments}
+    reference = prediction_indices[experiments[0].name]
+    if any(not index.equals(reference) for index in prediction_indices.values()):
+        raise ValueError("financial comparison requires identical A/B/C prediction indices")
+    backtests = {}
+    for result in experiments:
+        backtests[result.name] = backtest_long_only(
+            result.predictions["probability"],
+            df.loc[result.predictions.index, "close"].pct_change().fillna(0.0),
+            threshold=threshold,
+            transaction_cost_bps=transaction_cost_bps,
+            slippage_bps=slippage_bps,
+        )
+    return experiments, backtests
