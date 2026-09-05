@@ -17,6 +17,19 @@ def _random_probabilities(size: int, seed: int) -> np.ndarray:
     return np.random.default_rng(seed).random(size)
 
 
+def _benchmark_metrics(close: pd.Series, periods_per_year: int) -> dict[str, float]:
+    returns = close.astype(float).shift(-1).dropna()
+    equity = (1.0 + returns).cumprod()
+    std = returns.std(ddof=1)
+    downside = np.sqrt(np.mean(np.minimum(returns.to_numpy(), 0.0) ** 2))
+    return {
+        "buy_and_hold_total_return": float(equity.iloc[-1] - 1.0),
+        "buy_and_hold_max_drawdown": float((equity / equity.cummax() - 1.0).min()),
+        "buy_and_hold_sharpe": float(returns.mean() / std * np.sqrt(periods_per_year)) if len(returns) > 1 and std > 0 else float("nan"),
+        "buy_and_hold_sortino": float(returns.mean() / downside * np.sqrt(periods_per_year)) if len(returns) > 1 and downside > 0 else float("nan"),
+    }
+
+
 def evaluate_financial_matrix(
     predictions: dict[str, pd.DataFrame],
     *,
@@ -38,6 +51,8 @@ def evaluate_financial_matrix(
         raise ValueError("at least one prediction set is required")
     if not costs_bps or not slippage_bps:
         raise ValueError("cost and slippage grids cannot be empty")
+    if periods_per_year <= 0:
+        raise ValueError("periods_per_year must be positive")
     if "close" not in benchmark.columns:
         raise ValueError("benchmark must contain close")
     reference_index = benchmark.index
@@ -50,6 +65,7 @@ def evaluate_financial_matrix(
     random_frame = benchmark[["close"]].copy()
     random_frame[probability_column] = _random_probabilities(len(random_frame), random_seed)
     all_predictions = {**predictions, "random": random_frame}
+    benchmark_metrics = _benchmark_metrics(benchmark["close"], periods_per_year)
 
     rows: list[dict[str, float | str]] = []
     for experiment_name, frame in all_predictions.items():
@@ -68,15 +84,12 @@ def evaluate_financial_matrix(
                     "transaction_cost_bps": float(cost),
                     "slippage_bps": float(slippage),
                     **metrics,
+                    **benchmark_metrics,
                 })
 
-    close = benchmark["close"].astype(float)
-    asset_returns = close.shift(-1).dropna()
-    buy_hold_total = float((1.0 + asset_returns).prod() - 1.0)
-    result = pd.DataFrame(rows)
-    result["buy_and_hold_total_return"] = buy_hold_total
-    result["benchmark"] = "buy_and_hold"
-    return result.sort_values(["experiment", "transaction_cost_bps", "slippage_bps"]).reset_index(drop=True)
+    return pd.DataFrame(rows).sort_values(
+        ["experiment", "transaction_cost_bps", "slippage_bps"]
+    ).reset_index(drop=True)
 
 
 def period_stability(
@@ -88,16 +101,25 @@ def period_stability(
     """Recompute fixed-backtest metrics over pre-declared chronological periods."""
     if periods_per_year <= 0:
         raise ValueError("periods_per_year must be positive")
+    index = pd.DatetimeIndex(backtest.index)
+    if index.tz is None:
+        index = index.tz_localize("UTC")
+    else:
+        index = index.tz_convert("UTC")
     rows = []
     for name, (start, end) in periods.items():
-        subset = backtest.loc[(backtest.index >= pd.Timestamp(start)) & (backtest.index <= pd.Timestamp(end))]
+        start_ts = pd.Timestamp(start)
+        end_ts = pd.Timestamp(end)
+        start_ts = start_ts.tz_localize("UTC") if start_ts.tzinfo is None else start_ts.tz_convert("UTC")
+        end_ts = end_ts.tz_localize("UTC") if end_ts.tzinfo is None else end_ts.tz_convert("UTC")
+        subset = backtest.loc[(index >= start_ts) & (index <= end_ts)].copy()
         if subset.empty:
             rows.append({"period": name, "observations": 0})
             continue
         returns = subset["strategy_return"].astype(float)
         equity = (1.0 + returns).cumprod()
         std = returns.std(ddof=1)
-        downside = (returns.clip(upper=0.0) ** 2).mean() ** 0.5
+        downside = np.sqrt(np.mean(np.minimum(returns.to_numpy(), 0.0) ** 2))
         rows.append({
             "period": name,
             "start": subset.index.min(),
