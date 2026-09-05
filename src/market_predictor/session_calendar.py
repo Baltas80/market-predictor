@@ -123,12 +123,39 @@ def session_table(start: str | date, end: str | date) -> pd.DataFrame:
     return pd.DataFrame(rows).set_index("session_date")
 
 
+_AUDIT_COLUMNS = (
+    "timestamp_utc",
+    "session_date",
+    "valid_market_day",
+    "expected_close_utc",
+    "at_or_before_close",
+    "after_close",
+    "weekend",
+    "holiday",
+)
+
+
 def audit_market_timestamps(index: pd.DatetimeIndex) -> pd.DataFrame:
     """Audit UTC timestamps against their expected NY session date/close."""
     if index.tz is None:
         raise ValueError("market timestamps must be timezone-aware")
+    normalized = pd.DatetimeIndex(index).tz_convert("UTC")
+    if normalized.empty:
+        empty = pd.DataFrame(
+            {
+                "timestamp_utc": pd.DatetimeIndex([], tz="UTC"),
+                "session_date": pd.Series([], dtype="object"),
+                "valid_market_day": pd.Series([], dtype="bool"),
+                "expected_close_utc": pd.Series([], dtype="datetime64[ns, UTC]"),
+                "at_or_before_close": pd.Series([], dtype="bool"),
+                "after_close": pd.Series([], dtype="bool"),
+                "weekend": pd.Series([], dtype="bool"),
+                "holiday": pd.Series([], dtype="bool"),
+            }
+        )
+        return empty.set_index("timestamp_utc")
     rows = []
-    for timestamp in pd.DatetimeIndex(index).tz_convert("UTC"):
+    for timestamp in normalized:
         local = timestamp.tz_convert(NEW_YORK)
         session = local.date()
         valid_day = is_market_session(session)
