@@ -5,7 +5,7 @@ from __future__ import annotations
 import pandas as pd
 
 from .abc_execution_guard import build_abc_execution_plan, execute_abc
-from .abc_protocol import ABCProtocol, common_walk_forward_folds
+from .abc_protocol import ABCProtocol, common_walk_forward_folds, folds_identity_hash
 from .backtest import Fold, walk_forward_classification
 from .event_features import events_to_features
 from .event_schema import MarketEvent
@@ -68,7 +68,7 @@ def _shared_final_lockbox_folds(data: pd.DataFrame, horizon: int, test_fraction:
     test_size = max(1, int(n_rows * test_fraction))
     initial_train_size = n_rows - test_size - horizon
     if initial_train_size < 2:
-        raise ValueError("not enough observations for lockbox train, purge, and test")
+        raise ValueError("not enough observations for final lockbox train, purge, and test")
     return tuple(common_walk_forward_folds(n_rows=n_rows, initial_train_size=initial_train_size, test_size=test_size, horizon=horizon))
 
 
@@ -100,6 +100,7 @@ def _build_final_abc_plan(data: pd.DataFrame, folds: tuple[Fold, ...], horizon: 
         dataset_hash=dataframe_sha256(data),
         code_version="pipeline.final_abc",
         protocol_version=PROTOCOL_VERSION,
+        folds_hash=folds_identity_hash(folds),
     )
     plan = build_abc_execution_plan(protocol=protocol, folds=folds, observation_index=data.index, target="target")
     return plan
