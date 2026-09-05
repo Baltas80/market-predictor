@@ -3,10 +3,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Mapping
+from typing import Mapping, Sequence
 import hashlib
 
 import pandas as pd
+
+from .backtest import Fold
 
 
 @dataclass(frozen=True)
@@ -24,6 +26,7 @@ class ABCProtocol:
     dataset_hash: str
     code_version: str
     protocol_version: str = "abc-v1"
+    folds_hash: str = ""
 
     def validate(self) -> None:
         if self.lockbox_end < self.lockbox_start:
@@ -56,12 +59,27 @@ class ABCProtocol:
             self.dataset_hash,
             self.code_version,
             self.protocol_version,
+            self.folds_hash,
         )
 
     def fingerprint(self) -> str:
         """Return a deterministic identity for the complete shared contract."""
         payload = repr(self.compatibility_key()).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
+
+
+def folds_identity_hash(folds: Sequence[Fold]) -> str:
+    """Hash every fold boundary, not merely its OOS prediction index."""
+    payload = [
+        {
+            "train_start": int(fold.train_start),
+            "train_end": int(fold.train_end),
+            "test_start": int(fold.test_start),
+            "test_end": int(fold.test_end),
+        }
+        for fold in folds
+    ]
+    return hashlib.sha256(repr(payload).encode("utf-8")).hexdigest()
 
 
 # Compatibility name retained for callers during the migration. It is an alias,
