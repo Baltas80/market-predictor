@@ -2,10 +2,11 @@ import numpy as np
 import pandas as pd
 
 from market_predictor.pipeline import run_final_lockbox_financial_comparison
+from market_predictor.session_calendar import session_table
 
 
 def make_frame(rows: int = 140) -> pd.DataFrame:
-    index = pd.date_range("2025-01-01", periods=rows, freq="D", tz="UTC")
+    index = session_table("2025-01-02", "2025-12-31")["close_utc"].iloc[:rows]
     rng = np.random.default_rng(42)
     close = 100 + np.cumsum(rng.normal(0.2, 1.0, rows))
     close = np.maximum(close, 10)
@@ -19,7 +20,7 @@ def make_frame(rows: int = 140) -> pd.DataFrame:
             "macro_rate": rng.normal(0, 1, rows),
             "geo_pressure": rng.normal(0, 1, rows),
         },
-        index=index,
+        index=pd.DatetimeIndex(index),
     )
 
 
