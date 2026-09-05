@@ -5,6 +5,7 @@ import pytest
 
 from market_predictor.time_contract import (
     ObservationWindow,
+    assert_market_target_contract,
     assert_point_in_time,
     next_session_decision_time,
 )
@@ -33,6 +34,23 @@ def test_series_contract_rejects_future_information() -> None:
             pd.Series(["2020-01-02T00:00:00Z"]),
             pd.Series(["2020-01-07T00:00:00Z"]),
         )
+
+
+def test_market_target_contract_accepts_valid_chronology() -> None:
+    market = pd.date_range("2020-01-01", periods=10, freq="D")
+    assert_market_target_contract(market, horizon=5)
+
+
+def test_market_target_contract_rejects_duplicate_index() -> None:
+    market = pd.DatetimeIndex(["2020-01-01", "2020-01-02", "2020-01-02", "2020-01-04"])
+    with pytest.raises(ValueError, match="duplicates"):
+        assert_market_target_contract(market, horizon=1)
+
+
+def test_market_target_contract_rejects_non_chronological_index() -> None:
+    market = pd.DatetimeIndex(["2020-01-01", "2020-01-03", "2020-01-02"])
+    with pytest.raises(ValueError, match="chronological"):
+        assert_market_target_contract(market, horizon=1)
 
 
 def test_next_session_is_strictly_after_availability() -> None:
