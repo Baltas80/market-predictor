@@ -12,6 +12,9 @@ import zipfile
 import pandas as pd
 import requests
 
+from .fred_pit import audit_fred_point_in_time
+from .session_calendar import session_close
+
 STOOQ_DAILY_URL = "https://stooq.com/q/d/l/"
 FRED_OBSERVATIONS_URL = "https://api.stlouisfed.org/fred/series/observations"
 GDELT_DAILY_URL = "https://data.gdeltproject.org/events/{date}.export.CSV.zip"
@@ -43,6 +46,7 @@ def _get(url: str, *, timeout: int = 60, params: dict | None = None) -> requests
 
 
 def load_stooq_daily(symbol: str = "^spx", start: str | None = None, end: str | None = None) -> pd.DataFrame:
+    """Load daily bars and represent each bar at its modeled cash-session close."""
     params = {"s": symbol, "i": "d"}
     if start: params["d1"] = pd.Timestamp(start).strftime("%Y%m%d")
     if end: params["d2"] = pd.Timestamp(end).strftime("%Y%m%d")
@@ -52,9 +56,22 @@ def load_stooq_daily(symbol: str = "^spx", start: str | None = None, end: str | 
     required = ["date", "open", "high", "low", "close", "volume"]
     missing = set(required) - set(frame.columns)
     if missing: raise ValueError(f"Stooq response missing columns: {sorted(missing)}")
+    raw_dates = frame["date"].dt.date
+    if any(not _is_valid_session_date(day) for day in raw_dates):
+        invalid = sorted({day.isoformat() for day in raw_dates if not _is_valid_session_date(day)})
+        raise ValueError(f"Stooq returned non-session dates: {invalid[:10]}")
+    frame["date"] = [session_close(day) for day in raw_dates]
     frame = frame.set_index("date").sort_index()
-    if frame.index.has_duplicates: raise ValueError("Stooq returned duplicate dates")
+    if frame.index.has_duplicates: raise ValueError("Stooq returned duplicate session dates")
     return frame[["open", "high", "low", "close", "volume"]].astype(float)
+
+
+def _is_valid_session_date(day) -> bool:
+    try:
+        session_close(day)
+        return True
+    except ValueError:
+        return False
 
 
 def load_fred_observations(series_id: str, api_key: str, *, realtime_start: str | None = None, realtime_end: str | None = None) -> pd.DataFrame:
@@ -67,6 +84,7 @@ def load_fred_observations(series_id: str, api_key: str, *, realtime_start: str 
     for column in ("date", "realtime_start", "realtime_end"):
         frame[column] = pd.to_datetime(frame[column], errors="coerce", utc=True)
     frame["value"] = pd.to_numeric(frame["value"], errors="coerce")
+    audit_fred_point_in_time(frame[["series_id", "date", "value", "realtime_start", "realtime_end"]])
     return frame.dropna(subset=["date", "value"]).sort_values(["date", "realtime_start"])
 
 
@@ -75,6 +93,8 @@ def align_fred_point_in_time(observations: pd.DataFrame, market_index: pd.Dateti
     missing = required - set(observations.columns)
     if missing: raise ValueError(f"FRED observations missing columns: {sorted(missing)}")
     if conservative_session_lag < 0: raise ValueError("conservative_session_lag must be >= 0")
+    if {"series_id", "realtime_end"}.issubset(observations.columns):
+        audit_fred_point_in_time(observations[["series_id", "date", "value", "realtime_start", "realtime_end"]])
     market = pd.DatetimeIndex(market_index).tz_localize(None).normalize()
     vintages = observations.copy()
     vintages["date"] = pd.to_datetime(vintages["date"], errors="coerce").dt.tz_localize(None)
@@ -158,21 +178,13 @@ def gdelt_events_to_market_events(frame: pd.DataFrame) -> pd.DataFrame:
     """Map GDELT without conflating occurrence, publication and availability."""
     event_time = pd.to_datetime(frame["sql_date"], utc=True, errors="coerce")
     available_at = pd.to_datetime(frame["date_added"], utc=True, errors="coerce")
-    # GDELT daily exports do not provide a canonical article publication time.
-    # Keep publication unknown instead of falsely equating DATEADDED with it.
     return pd.DataFrame({
-        "event_id": frame["global_event_id"].astype(str),
-        "event_time": event_time,
-        "published_at": pd.NaT,
-        "available_at": available_at,
-        "category": frame["category"],
-        "severity": frame["severity"].round(6),
-        "country": frame["action_geo_country"].replace("", pd.NA),
-        "entity": frame["actor2_name"].replace("", pd.NA),
-        "sector": pd.NA, "duration_days": 0.0,
+        "event_id": frame["global_event_id"].astype(str), "event_time": event_time,
+        "published_at": pd.NaT, "available_at": available_at, "category": frame["category"],
+        "severity": frame["severity"].round(6), "country": frame["action_geo_country"].replace("", pd.NA),
+        "entity": frame["actor2_name"].replace("", pd.NA), "sector": pd.NA, "duration_days": 0.0,
         "media_intensity": frame["num_sources"].fillna(0), "surprise": frame["surprise"],
-        "source": "GDELT_2_Event_Database", "availability_proxy": "DATEADDED",
-        "source_url": frame["source_url"],
+        "source": "GDELT_2_Event_Database", "availability_proxy": "DATEADDED", "source_url": frame["source_url"],
     }).drop_duplicates("event_id").sort_values("available_at")
 
 
