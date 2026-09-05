@@ -18,6 +18,7 @@ from .data_sources import (
 from .research_schema import deduplicate_events, normalize_event_sources
 
 FRED_SERIES = ("DFF", "FEDFUNDS", "DGS10", "CPIAUCSL", "UNRATE", "VIXCLS")
+FRED_VINTAGE_CHUNK_DAYS = 365
 
 
 def fetch_market(start: str, end: str) -> pd.DataFrame:
@@ -25,23 +26,49 @@ def fetch_market(start: str, end: str) -> pd.DataFrame:
     return load_stooq_daily("^spx", start=start, end=end)
 
 
+def _fred_vintage_windows(start: str, end: str) -> list[tuple[str, str]]:
+    """Split a long real-time period into bounded FRED vintage windows.
+
+    FRED output_type=2 returns observations by vintage date and imposes result
+    limits. Keeping each request to at most one calendar year avoids requesting
+    an oversized daily-vintage payload (notably for DFF) while preserving every
+    vintage in the requested period.
+    """
+    first = pd.Timestamp(start).normalize()
+    last = pd.Timestamp(end).normalize()
+    if last < first:
+        raise ValueError("FRED end must be on or after start")
+    windows: list[tuple[str, str]] = []
+    current = first
+    while current <= last:
+        window_end = min(current + pd.Timedelta(days=FRED_VINTAGE_CHUNK_DAYS - 1), last)
+        windows.append((current.date().isoformat(), window_end.date().isoformat()))
+        current = window_end + pd.Timedelta(days=1)
+    return windows
+
+
 def fetch_fred(api_key: str, start: str, end: str) -> pd.DataFrame:
-    """Retrieve all required FRED vintages and normalize to the PIT schema."""
+    """Retrieve all required FRED vintages and normalize to the PIT schema.
+
+    Long 2000-2025 requests are split into one-year real-time windows so daily
+    series stay below FRED's output_type=2 result limits.
+    """
     frames: list[pd.DataFrame] = []
     for series_id in FRED_SERIES:
-        frame = load_fred_observations(
-            series_id,
-            api_key,
-            realtime_start=start,
-            realtime_end=end,
-        ).copy()
-        if frame.empty:
-            continue
-        frame["series_id"] = series_id
-        frame["observation_date"] = pd.to_datetime(frame["date"], utc=True).dt.normalize()
-        frame["vintage_start"] = pd.to_datetime(frame["realtime_start"], utc=True).dt.normalize()
-        frame["vintage_end"] = pd.to_datetime(frame["realtime_end"], utc=True).dt.normalize()
-        frames.append(frame[["series_id", "observation_date", "value", "vintage_start", "vintage_end"]])
+        for realtime_start, realtime_end in _fred_vintage_windows(start, end):
+            frame = load_fred_observations(
+                series_id,
+                api_key,
+                realtime_start=realtime_start,
+                realtime_end=realtime_end,
+            ).copy()
+            if frame.empty:
+                continue
+            frame["series_id"] = series_id
+            frame["observation_date"] = pd.to_datetime(frame["date"], utc=True).dt.normalize()
+            frame["vintage_start"] = pd.to_datetime(frame["realtime_start"], utc=True).dt.normalize()
+            frame["vintage_end"] = pd.to_datetime(frame["realtime_end"], utc=True).dt.normalize()
+            frames.append(frame[["series_id", "observation_date", "value", "vintage_start", "vintage_end"]])
     if not frames:
         return pd.DataFrame(columns=["series_id", "observation_date", "value", "vintage_start", "vintage_end"])
     result = pd.concat(frames, ignore_index=True)
