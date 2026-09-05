@@ -13,12 +13,13 @@ from market_predictor.abc_protocol import ABCProtocol, assert_same_abc_protocol,
 from market_predictor.information_set import build_information_set
 from market_predictor.research_gate import ResearchGateState
 from market_predictor.reproducibility import canonical_json_hash
-from market_predictor.session_calendar import audit_market_timestamps
+from market_predictor.session_calendar import audit_market_timestamps, session_table
 from market_predictor.temporal_audit import assert_no_future_information
 
 
 def main() -> None:
-    index = pd.date_range("2025-01-02", periods=12, freq="B", tz="UTC")
+    sessions = session_table("2025-01-02", "2025-01-31").head(12)
+    index = pd.DatetimeIndex(sessions["close_utc"])
     market = pd.DataFrame({"close": range(100, 112)}, index=index)
     macro = pd.DataFrame(
         {
@@ -43,6 +44,8 @@ def main() -> None:
     session_audit = audit_market_timestamps(index)
     if session_audit["weekend"].any() or session_audit["holiday"].any():
         raise RuntimeError("research gate: market index contains non-session timestamps")
+    if session_audit["after_close"].any() or not session_audit["at_or_before_close"].all():
+        raise RuntimeError("research gate: market index contains timestamps after session close")
     assert_no_future_information(events.assign(decision_time=index[3]))
 
     # INFORMATION SET
