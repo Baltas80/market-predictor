@@ -25,8 +25,11 @@ def check_market(frame: pd.DataFrame) -> list[QualityCheck]:
     checks.append(QualityCheck("market_columns", set(required).issubset(frame.columns), "required OHLCV columns present"))
     if not set(required).issubset(frame.columns):
         return checks
-    idx = pd.DatetimeIndex(frame.index)
-    checks.append(QualityCheck("market_index_datetime", isinstance(frame.index, pd.DatetimeIndex), "index must be a DatetimeIndex"))
+    is_datetime = isinstance(frame.index, pd.DatetimeIndex)
+    checks.append(QualityCheck("market_index_datetime", is_datetime, "index must be a DatetimeIndex"))
+    if not is_datetime:
+        return checks
+    idx = frame.index
     checks.append(QualityCheck("market_index_unique", not idx.has_duplicates, "dates must be unique"))
     checks.append(QualityCheck("market_index_sorted", idx.is_monotonic_increasing, "dates must be chronological"))
     numeric = frame[required].apply(pd.to_numeric, errors="coerce")
