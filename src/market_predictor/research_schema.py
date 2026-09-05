@@ -27,6 +27,16 @@ def _utc_timestamp(value: object, name: str) -> pd.Timestamp:
     return timestamp.tz_convert("UTC")
 
 
+def _parse_vintage_timestamp(series: pd.Series) -> pd.Series:
+    """Parse vintage timestamps while preserving FRED's open-ended sentinel."""
+    values = series.astype("string")
+    open_ended = values.eq("9999-12-31")
+    parsed = pd.to_datetime(values.mask(open_ended), utc=True, errors="coerce")
+    if open_ended.any():
+        parsed.loc[open_ended] = pd.Timestamp.max.tz_localize("UTC")
+    return parsed
+
+
 def validate_market_frame(frame: pd.DataFrame) -> None:
     missing = set(MARKET_COLUMNS) - set(frame.columns)
     if missing:
@@ -53,8 +63,9 @@ def validate_macro_frame(frame: pd.DataFrame) -> None:
     if missing:
         raise ValueError(f"macro data missing columns: {sorted(missing)}")
     data = frame.copy()
-    for column in ("observation_date", "vintage_start", "vintage_end"):
-        data[column] = pd.to_datetime(data[column], utc=True, errors="coerce")
+    data["observation_date"] = pd.to_datetime(data["observation_date"], utc=True, errors="coerce")
+    data["vintage_start"] = pd.to_datetime(data["vintage_start"], utc=True, errors="coerce")
+    data["vintage_end"] = _parse_vintage_timestamp(data["vintage_end"])
     data["value"] = pd.to_numeric(data["value"], errors="coerce")
     if data[list(MACRO_COLUMNS)].isna().any().any():
         raise ValueError("macro schema contains invalid or missing values")
@@ -65,7 +76,7 @@ def validate_macro_frame(frame: pd.DataFrame) -> None:
     if (data["vintage_end"] < data["vintage_start"]).any():
         raise ValueError("macro vintage_end cannot precede vintage_start")
     if data.duplicated(["series_id", "observation_date", "vintage_start"]).any():
-        raise ValueError("duplicate macro vintage keys")
+        raise ValueError("duplicate FRED vintage keys")
 
 
 def validate_event_frame(frame: pd.DataFrame) -> None:
