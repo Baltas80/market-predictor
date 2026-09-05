@@ -38,8 +38,13 @@ GDELT_COLUMNS = [
 ]
 
 
-def _get(url: str, *, timeout: int = 60) -> requests.Response:
-    response = requests.get(url, timeout=timeout, headers={"User-Agent": "market-predictor/0.1"})
+def _get(url: str, *, timeout: int = 60, params: dict | None = None) -> requests.Response:
+    response = requests.get(
+        url,
+        params=params,
+        timeout=timeout,
+        headers={"User-Agent": "market-predictor/0.1"},
+    )
     response.raise_for_status()
     return response
 
@@ -51,25 +56,17 @@ def load_stooq_daily(symbol: str = "^spx", start: str | None = None, end: str | 
         params["d1"] = pd.Timestamp(start).strftime("%Y%m%d")
     if end:
         params["d2"] = pd.Timestamp(end).strftime("%Y%m%d")
-    response = _get(STOOQ_DAILY_URL, timeout=60)
-    # Stooq accepts query parameters; use a second request so parameters are explicit.
-    response = requests.get(
-        STOOQ_DAILY_URL,
-        params=params,
-        timeout=60,
-        headers={"User-Agent": "market-predictor/0.1"},
-    )
-    response.raise_for_status()
+    response = _get(STOOQ_DAILY_URL, timeout=60, params=params)
     frame = pd.read_csv(StringIO(response.text), parse_dates=["Date"])
     frame.columns = [column.lower() for column in frame.columns]
-    required = {"date", "open", "high", "low", "close", "volume"}
-    missing = required - set(frame.columns)
+    required = ["date", "open", "high", "low", "close", "volume"]
+    missing = set(required) - set(frame.columns)
     if missing:
         raise ValueError(f"Stooq response missing columns: {sorted(missing)}")
     frame = frame.set_index("date").sort_index()
     if frame.index.has_duplicates:
         raise ValueError("Stooq returned duplicate dates")
-    return frame[list(required - {"date"})].astype(float)
+    return frame[["open", "high", "low", "close", "volume"]].astype(float)
 
 
 def load_fred_observations(
@@ -90,13 +87,7 @@ def load_fred_observations(
         params["realtime_start"] = realtime_start
     if realtime_end:
         params["realtime_end"] = realtime_end
-    response = requests.get(
-        FRED_OBSERVATIONS_URL,
-        params=params,
-        timeout=60,
-        headers={"User-Agent": "market-predictor/0.1"},
-    )
-    response.raise_for_status()
+    response = _get(FRED_OBSERVATIONS_URL, timeout=60, params=params)
     payload = response.json()
     observations = payload.get("observations", [])
     frame = pd.DataFrame(observations)
@@ -119,7 +110,7 @@ def _gdelt_category(event_root_code: str, event_code: str, actor_text: str) -> s
     root = str(event_root_code).zfill(2)
     code = str(event_code).zfill(4)
     actor_text = actor_text.lower()
-    if code == "163" or code.startswith("163"):
+    if code == "0163" or code.startswith("0163"):
         return "sanctions"
     if root == "14":
         return "social_unrest"
