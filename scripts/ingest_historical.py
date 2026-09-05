@@ -14,6 +14,17 @@ from pathlib import Path
 from market_predictor.historical_coverage import coverage_dict, DATASET_START, DATASET_END
 
 
+STAGES = (
+    "download",
+    "raw",
+    "hash",
+    "normalize",
+    "pit",
+    "historical_gate",
+    "dataset",
+)
+
+
 def build_plan(output_dir: Path) -> dict[str, object]:
     return {
         "status": "planned_not_validated",
@@ -23,6 +34,7 @@ def build_plan(output_dir: Path) -> dict[str, object]:
         "raw_directory": str(output_dir / "raw"),
         "normalized_directory": str(output_dir / "normalized"),
         "manifest": str(output_dir / "source_manifest.json"),
+        "stages": [{"name": name, "status": "blocked"} for name in STAGES],
         "execution_policy": {
             "default": "dry_run",
             "requires_explicit_execute": True,
