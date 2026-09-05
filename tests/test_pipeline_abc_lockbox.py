@@ -3,12 +3,13 @@ import pandas as pd
 import pytest
 
 from market_predictor.pipeline import run_final_lockbox_experiments
+from market_predictor.session_calendar import session_table
 
 
 def _data(n=180):
     rng = np.random.default_rng(11)
     close = 100 * np.cumprod(1 + rng.normal(0.0004, 0.01, n))
-    index = pd.date_range("2020-01-01", periods=n, freq="D", tz="UTC")
+    index = session_table("2020-01-02", "2021-01-31")["close_utc"].iloc[:n]
     frame = pd.DataFrame(
         {
             "open": close * (1 + rng.normal(0, 0.002, n)),
@@ -19,7 +20,7 @@ def _data(n=180):
             "macro_rate": rng.normal(3.0, 0.2, n),
             "geo_pressure": rng.normal(0.0, 1.0, n),
         },
-        index=index,
+        index=pd.DatetimeIndex(index),
     )
     return frame
 
