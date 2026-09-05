@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pandas as pd
 
+from market_predictor import data_sources
 from market_predictor.data_sources import (
     _gdelt_category,
     _sec_category,
     align_fred_point_in_time,
     gdelt_events_to_market_events,
+    load_stooq_daily,
 )
 from market_predictor.research_schema import normalize_event_sources, validate_event_frame
 
@@ -80,3 +84,14 @@ def test_sec_category_distinguishes_fraud_and_scandal() -> None:
     assert _sec_category("Accounting fraud charges", "") == "financial_fraud"
     assert _sec_category("Insider trading case", "") == "corporate_scandal"
     assert _sec_category("Commission order", "New regulatory action") == "regulation"
+
+
+def test_stooq_accepts_lowercase_date_header(monkeypatch) -> None:
+    response = SimpleNamespace(
+        text="date,open,high,low,close,volume\n2020-01-02,3200,3220,3190,3210,1000000\n"
+    )
+    monkeypatch.setattr(data_sources, "_get", lambda *args, **kwargs: response)
+    result = load_stooq_daily("^spx", start="2020-01-02", end="2020-01-02")
+    assert len(result) == 1
+    assert result.iloc[0]["close"] == 3210.0
+    assert result.index[0].tzinfo is not None
