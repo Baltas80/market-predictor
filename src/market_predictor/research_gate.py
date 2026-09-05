@@ -36,6 +36,18 @@ class ResearchGateState:
 
 def assert_market_session_audit(index: pd.DatetimeIndex) -> pd.DataFrame:
     """Fail closed on non-session dates and timestamps after the applicable close."""
+    if not isinstance(index, pd.DatetimeIndex):
+        raise TypeError("market timestamps must use a DatetimeIndex")
+    if len(index) == 0:
+        if index.tz is None:
+            raise ValueError("market timestamps must be timezone-aware")
+        return pd.DataFrame(
+            columns=[
+                "session_date", "valid_market_day", "expected_close_utc",
+                "at_or_before_close", "after_close", "weekend", "holiday",
+            ],
+            index=pd.DatetimeIndex([], tz="UTC", name="timestamp_utc"),
+        )
     audit = audit_market_timestamps(index)
     invalid = audit.loc[(~audit["valid_market_day"]) | audit["after_close"]]
     if not invalid.empty:
