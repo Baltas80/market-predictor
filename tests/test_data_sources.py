@@ -4,6 +4,7 @@ import pandas as pd
 
 from market_predictor.data_sources import (
     _gdelt_category,
+    _sec_category,
     align_fred_point_in_time,
     gdelt_events_to_market_events,
 )
@@ -37,6 +38,8 @@ def test_gdelt_event_conversion_deduplicates_and_preserves_availability() -> Non
     assert len(result) == 2
     assert result.iloc[0]["published_at"] == "2020-01-01T12:00:00Z"
     assert result.iloc[0]["event_id"] == "1"
+    assert result.iloc[0]["source"] == "GDELT_2_Event_Database"
+    assert result.iloc[0]["availability_proxy"] == "DATEADDED"
 
 
 def test_fred_alignment_does_not_use_same_day_vintage_by_default() -> None:
@@ -51,3 +54,9 @@ def test_fred_alignment_does_not_use_same_day_vintage_by_default() -> None:
     aligned = align_fred_point_in_time(observations, market_index)
     assert pd.isna(aligned.loc["2020-01-01", "value"])
     assert aligned.loc["2020-01-04", "value"] == 2.0
+
+
+def test_sec_category_distinguishes_fraud_and_scandal() -> None:
+    assert _sec_category("Accounting fraud charges", "") == "financial_fraud"
+    assert _sec_category("Insider trading case", "") == "corporate_scandal"
+    assert _sec_category("Commission order", "New regulatory action") == "regulation"
