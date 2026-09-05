@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 
 import pandas as pd
+import pytest
 
-from market_predictor.dataset import build_manifest, load_events, load_market, materialize_macro
+from market_predictor.dataset import build_manifest, load_events, load_fred_vintage, load_market, materialize_macro
 
 
 def test_load_market_rejects_duplicate_dates(tmp_path) -> None:
@@ -38,6 +39,25 @@ def test_materialize_macro_preserves_only_point_in_time_values(tmp_path) -> None
     result = materialize_macro(index, {"TEST": path}, align_fred_point_in_time)
     assert pd.isna(result.loc["2020-01-01", "TEST"])
     assert result.loc["2020-01-04", "TEST"] == 2.0
+
+
+def test_load_fred_vintage_accepts_missing_realtime_end(tmp_path) -> None:
+    path = tmp_path / "fred.csv"
+    pd.DataFrame({
+        "date": ["2020-01-01"],
+        "value": [1.0],
+        "realtime_start": ["2020-01-02"],
+    }).to_csv(path, index=False)
+    result = load_fred_vintage(path)
+    assert len(result) == 1
+    assert "realtime_end" not in result.columns
+
+
+def test_load_fred_vintage_requires_realtime_start(tmp_path) -> None:
+    path = tmp_path / "fred.csv"
+    pd.DataFrame({"date": ["2020-01-01"], "value": [1.0]}).to_csv(path, index=False)
+    with pytest.raises(ValueError, match="realtime_start"):
+        load_fred_vintage(path)
 
 
 def test_load_events_deduplicates_ids(tmp_path) -> None:
