@@ -1,0 +1,46 @@
+version: 1
+updated_at: 2026-09-05
+purpose: point_in_time_market_prediction
+sources:
+  market:
+    provider: Stooq
+    dataset: daily_ohlcv
+    initial_symbol: '^spx'
+    availability: historical_csv
+    primary_use: technical_features
+    caveat: cash_index_data_is_not_executable_futures_data
+  macro:
+    provider: Federal_Reserve_Bank_of_St_Louis
+    datasets: FRED_ALFRED
+    api: https://api.stlouisfed.org/fred/series/observations
+    point_in_time_rule: select_vintage_known_before_decision_time
+    default_conservative_lag_days: 1
+    initial_series:
+      - UNRATE
+      - CPIAUCSL
+      - DGS10
+      - DFF
+      - T10Y2Y
+      - VIXCLS
+    primary_use: macro_features
+  events:
+    provider: GDELT_Project
+    dataset: GDELT_2_Event_Database
+    archive: https://data.gdeltproject.org/events/
+    availability_field: DATEADDED
+    availability_timezone: UTC
+    deduplication_key: GLOBALEVENTID
+    primary_use: geopolitical_and_event_features
+    caveat: DATEADDED_is_database_availability_proxy_not_original_article_publication_time
+  scandals_and_fraud:
+    provider: U.S._Securities_and_Exchange_Commission
+    dataset: Litigation_Releases
+    archive: https://www.sec.gov/enforcement-litigation/litigation-releases
+    primary_use: corporate_scandal_and_financial_fraud_events
+    status: planned_secondary_ingestion
+rules:
+  - preserve_original_source_fields_before_normalization
+  - never_replace_information_available_time_with_later_confirmation_time
+  - keep_raw_and_normalized_event_ids
+  - do_not_use_current_fred_revisions_as_historical_features
+  - do_not_commit_large_raw_archives_to_git
