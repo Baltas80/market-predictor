@@ -4,9 +4,10 @@ Examples:
   python scripts/ingest_real_data.py --market-symbol '^spx' --start 2000-01-01
   FRED_API_KEY=... python scripts/ingest_real_data.py --fred-series UNRATE CPIAUCSL
   python scripts/ingest_real_data.py --gdelt-start 2020-01-01 --gdelt-end 2020-12-31
+  python scripts/ingest_real_data.py --sec
 
-GDELT can be very large. It is intentionally opt-in and downloaded day by
- day so a failed run can be resumed without corrupting a monolithic archive.
+GDELT is downloaded day by day. Raw files and generated inputs belong under
+``data/raw`` and are intentionally ignored by Git.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from market_predictor.data_sources import (
     gdelt_events_to_market_events,
     load_fred_observations,
     load_gdelt_day,
+    load_sec_litigation_releases_rss,
     load_stooq_daily,
     write_events_csv,
     write_market_csv,
@@ -38,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fred-realtime-end", default=None)
     parser.add_argument("--gdelt-start", default=None)
     parser.add_argument("--gdelt-end", default=None)
+    parser.add_argument("--sec", action="store_true")
     parser.add_argument("--out-dir", default="data/raw")
     parser.add_argument("--sleep-seconds", type=float, default=0.1)
     return parser.parse_args()
@@ -50,6 +53,7 @@ def main() -> None:
 
     market = load_stooq_daily(args.market_symbol, args.start, args.end)
     write_market_csv(market, out / f"market_{args.market_symbol.replace('^', 'index_')}.csv")
+    print(f"market: {len(market):,} rows")
 
     if args.fred_series:
         api_key = os.getenv("FRED_API_KEY")
@@ -63,6 +67,7 @@ def main() -> None:
                 realtime_end=args.fred_realtime_end,
             )
             macro.to_csv(out / f"fred_{series_id}.csv", index=False)
+            print(f"fred {series_id}: {len(macro):,} vintage rows")
 
     if args.gdelt_start:
         if not args.gdelt_end:
@@ -71,21 +76,16 @@ def main() -> None:
         end = pd.Timestamp(args.gdelt_end)
         if end < start:
             raise SystemExit("--gdelt-end must be on or after --gdelt-start")
-        chunks: list[pd.DataFrame] = []
         for day in pd.date_range(start, end, freq="D"):
             target = out / f"gdelt_events_{day:%Y%m%d}.csv"
             if target.exists():
                 continue
-            try:
-                raw = load_gdelt_day(day)
-                events = gdelt_events_to_market_events(raw)
-                write_events_csv(events, target)
-                chunks.append(events)
-            except Exception as exc:
-                print(f"GDELT {day:%Y-%m-%d}: {exc}")
+            raw = load_gdelt_day(day)
+            events = gdelt_events_to_market_events(raw)
+            write_events_csv(events, target)
+            print(f"gdelt {day:%Y-%m-%d}: {len(raw):,} raw rows -> {len(events):,} events")
             time.sleep(max(0.0, args.sleep_seconds))
 
-        # Build one deterministic deduplicated event file from all downloaded days.
         files = sorted(out.glob("gdelt_events_*.csv"))
         if files:
             combined = pd.concat((pd.read_csv(path) for path in files), ignore_index=True)
@@ -93,6 +93,12 @@ def main() -> None:
             combined = combined.drop_duplicates("event_id").sort_values("published_at")
             combined["published_at"] = combined["published_at"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
             write_events_csv(combined, out / "events_gdelt.csv")
+            print(f"gdelt combined: {len(combined):,} events")
+
+    if args.sec:
+        sec = load_sec_litigation_releases_rss()
+        write_events_csv(sec, out / "events_sec_litigation.csv")
+        print(f"sec litigation releases: {len(sec):,}")
 
 
 if __name__ == "__main__":
