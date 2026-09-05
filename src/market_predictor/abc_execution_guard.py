@@ -50,13 +50,7 @@ def build_abc_execution_plan(*, protocol: ABCProtocol, folds: Sequence[Fold], ob
     return plan
 
 
-def execute_abc(
-    data: pd.DataFrame,
-    *,
-    plan: ABCExecutionPlan,
-    macro_features: Sequence[str] = (),
-    geopolitical_features: Sequence[str] = (),
-) -> list[ExperimentResult]:
+def execute_abc(data: pd.DataFrame, *, plan: ABCExecutionPlan, macro_features: Sequence[str] = (), geopolitical_features: Sequence[str] = ()) -> list[ExperimentResult]:
     """Execute A/B/C from one immutable plan; feature groups are the only difference."""
     plan.validate()
     if not data.index.equals(plan.observation_index):
@@ -73,9 +67,14 @@ def execute_abc(
     names = tuple(result.name for result in results)
     if names != ("technical", "technical_macro", "technical_macro_geopolitical"):
         raise AssertionError("A/B/C execution returned an unexpected experiment family")
-    indices = {result.predictions.index for result in results}
-    if len(indices) != 1:
-        raise ValueError("A/B/C predictions diverged in OOS observations")
+    if not results:
+        raise ValueError("A/B/C execution returned no experiments")
+    reference_index = results[0].predictions.index
+    if not reference_index.equals(plan.observation_index[plan.folds[0].test_start:plan.folds[-1].test_end]):
+        raise ValueError("A/B/C predictions do not match the protocol test observations")
+    for result in results[1:]:
+        if not result.predictions.index.equals(reference_index):
+            raise ValueError("A/B/C predictions diverged in OOS observations")
     return results
 
 
