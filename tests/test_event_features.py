@@ -10,8 +10,8 @@ def test_event_features_never_use_future_events():
     features = events_to_features(index, [event])
     assert features.loc[index[0], "event_corruption"] == 0
     assert features.loc[index[1], "event_corruption"] == 0
-    assert features.loc[index[2], "event_corruption"] > 0
-    assert features.loc[index[3], "event_corruption"] < features.loc[index[2], "event_corruption"]
+    assert features.loc[index[2], "event_corruption"] == 0
+    assert features.loc[index[3], "event_corruption"] > 0
 
 
 def test_event_features_preserve_event_category_signal():
