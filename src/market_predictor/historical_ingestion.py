@@ -5,10 +5,12 @@ from dataclasses import dataclass, asdict
 from typing import Iterable
 import hashlib
 import json
+from pathlib import Path
 
 import pandas as pd
 
 from .research_schema import validate_market_frame, validate_macro_frame, validate_event_frame, deduplicate_events, admitted_events
+from .research_gate import assert_market_session_audit
 
 
 @dataclass(frozen=True)
@@ -20,6 +22,9 @@ class SourceManifest:
     rows: int
     sha256: str
     retrieval_version: str
+    source_uri: str = ""
+    schema_version: str = "2026-09-05"
+    availability_policy: str = ""
 
     def validate(self) -> None:
         if not self.source_id or not self.source_type or not self.sha256:
@@ -28,6 +33,8 @@ class SourceManifest:
             raise ValueError("source row count cannot be negative")
         if pd.Timestamp(self.coverage_end) < pd.Timestamp(self.coverage_start):
             raise ValueError("source coverage end cannot precede start")
+        if not self.schema_version:
+            raise ValueError("source manifest schema_version is required")
 
 
 def dataframe_sha256(frame: pd.DataFrame) -> str:
@@ -38,7 +45,7 @@ def dataframe_sha256(frame: pd.DataFrame) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def build_source_manifest(frame: pd.DataFrame, *, source_id: str, source_type: str, retrieval_version: str = "1") -> SourceManifest:
+def build_source_manifest(frame: pd.DataFrame, *, source_id: str, source_type: str, retrieval_version: str = "1", source_uri: str = "", schema_version: str = "2026-09-05", availability_policy: str = "") -> SourceManifest:
     if frame.empty:
         raise ValueError("cannot build a coverage manifest from an empty frame")
     if isinstance(frame.index, pd.DatetimeIndex):
@@ -51,34 +58,42 @@ def build_source_manifest(frame: pd.DataFrame, *, source_id: str, source_type: s
         if timestamps.empty:
             raise ValueError("frame has no valid coverage timestamps")
         start, end = timestamps.min(), timestamps.max()
-    manifest = SourceManifest(source_id, source_type, pd.Timestamp(start).isoformat(), pd.Timestamp(end).isoformat(), len(frame), dataframe_sha256(frame), retrieval_version)
+    manifest = SourceManifest(source_id, source_type, pd.Timestamp(start).isoformat(), pd.Timestamp(end).isoformat(), len(frame), dataframe_sha256(frame), retrieval_version, source_uri, schema_version, availability_policy)
     manifest.validate()
     return manifest
 
 
-def audit_event_timing(events: pd.DataFrame, market_index: pd.DatetimeIndex, *, close_hour_utc: int = 21) -> pd.DataFrame:
-    """Audit availability against each market session close without admitting future information."""
+def audit_event_timing(events: pd.DataFrame, market_index: pd.DatetimeIndex) -> pd.DataFrame:
+    """Audit event availability against every actual market decision timestamp."""
     validate_event_frame(events)
     market = pd.DatetimeIndex(market_index)
     if market.tz is None:
         raise ValueError("market index must be timezone-aware")
-    closes = pd.DataFrame({"decision_time": market})
-    closes["session_date"] = closes["decision_time"].dt.date
+    assert_market_session_audit(market)
     rows = []
     for _, event in events.iterrows():
-        available = pd.Timestamp(event["available_at"]).tz_convert("UTC")
-        later = closes[closes["decision_time"] < available]
-        rows.append({"event_id": event["event_id"], "available_at": available, "first_eligible_decision": closes.loc[~(closes["decision_time"] < available), "decision_time"].min() if (~(closes["decision_time"] < available)).any() else pd.NaT, "published_at": event["published_at"], "event_time": event["event_time"]})
+        available = pd.Timestamp(event["available_at"])
+        if available.tzinfo is None:
+            raise ValueError("event available_at must be timezone-aware")
+        available = available.tz_convert("UTC")
+        eligible = market[market >= available]
+        rows.append({
+            "event_id": event["event_id"],
+            "available_at": available,
+            "first_eligible_decision": eligible[0] if len(eligible) else pd.NaT,
+            "published_at": event["published_at"],
+            "event_time": event["event_time"],
+        })
     return pd.DataFrame(rows)
 
 
 def assemble_common_observations(market: pd.DataFrame, macro: pd.DataFrame | None = None, events: pd.DataFrame | None = None) -> pd.DataFrame:
     """Build the single observation index from which A/B/C must derive predictions."""
     validate_market_frame(market)
+    assert_market_session_audit(market.index)
     base = market.sort_index().copy()
     if macro is not None:
         validate_macro_frame(macro)
-        # Macro is expected to be pre-aligned point-in-time; only values keyed by decision date enter here.
         macro_copy = macro.copy()
         if isinstance(macro_copy.index, pd.DatetimeIndex):
             macro_copy = macro_copy[~macro_copy.index.duplicated(keep="last")]
@@ -91,8 +106,8 @@ def assemble_common_observations(market: pd.DataFrame, macro: pd.DataFrame | Non
             raise ValueError("macro must be indexed by decision_time or contain it")
     if events is not None:
         validate_event_frame(events)
-        # Events remain separate here; event_features performs per-decision admission.
         events = deduplicate_events(events)
+        audit_event_timing(events, base.index)
         base.attrs["event_count"] = len(events)
     base.attrs["observation_index_hash"] = hashlib.sha256("\n".join(pd.Timestamp(x).isoformat() for x in base.index).encode()).hexdigest()
     return base
@@ -104,8 +119,8 @@ def historical_information_set(events: pd.DataFrame, decision_time: str | pd.Tim
 
 
 def write_source_manifest(manifests: Iterable[SourceManifest], path: str) -> None:
-    payload = [asdict(item) for item in manifests]
-    for item in manifests:
+    items = list(manifests)
+    for item in items:
         item.validate()
-    Path = __import__("pathlib").Path
-    Path(path).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(json.dumps([asdict(item) for item in items], indent=2, sort_keys=True) + "\n", encoding="utf-8")
