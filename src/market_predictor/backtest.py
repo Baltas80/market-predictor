@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from .leakage import assert_purge_gap
 from .model import Evaluation, evaluate, fit_predict
 
 
@@ -24,12 +25,7 @@ def make_walk_forward_folds(
     step: int | None = None,
     purge: int = 0,
 ) -> list[Fold]:
-    """Create expanding-window folds with a gap between train and test.
-
-    ``purge`` should normally be at least the prediction horizon when labels
-    use future observations. This prevents training labels near the boundary
-    from incorporating information from the test period.
-    """
+    """Create expanding-window folds with a gap between train and test."""
     if n_rows <= 0 or initial_train_size < 1 or test_size < 1:
         raise ValueError("n_rows, initial_train_size and test_size must be positive")
     if purge < 0:
@@ -52,12 +48,25 @@ def walk_forward_classification(
     features: list[str],
     target: str,
     folds: list[Fold],
+    *,
+    horizon: int | None = None,
 ) -> tuple[pd.DataFrame, list[Evaluation]]:
-    """Fit one fresh model per fold and return out-of-sample predictions."""
+    """Fit one fresh model per fold and return out-of-sample predictions.
+
+    When ``horizon`` is supplied, every fold is independently checked against
+    the strict purge-gap contract before any model is fitted.
+    """
     predictions: list[pd.Series] = []
     evaluations: list[Evaluation] = []
 
     for fold in folds:
+        if horizon is not None:
+            assert_purge_gap(
+                data,
+                train_end=fold.train_end,
+                test_start=fold.test_start,
+                horizon=horizon,
+            )
         train = data.iloc[fold.train_start : fold.train_end]
         test = data.iloc[fold.test_start : fold.test_end]
         model, probabilities = fit_predict(
