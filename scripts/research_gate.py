@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from market_predictor.abc_protocol import ABCProtocol, assert_same_abc_protocol, common_walk_forward_folds
+from market_predictor.abc_protocol import ABCProtocol, assert_same_abc_protocol, common_walk_forward_folds, folds_identity_hash
 from market_predictor.information_set import build_information_set
 from market_predictor.research_gate import ResearchGateState
 from market_predictor.reproducibility import canonical_json_hash
@@ -26,7 +26,7 @@ def main() -> None:
             "series_id": ["TEST"] * 12,
             "observation_date": index,
             "value": range(12),
-            "vintage_start": index - pd.Timedelta(days=1),
+            "vintage_start": index,
             "vintage_end": index + pd.Timedelta(days=30),
         }
     )
@@ -50,24 +50,28 @@ def main() -> None:
 
     # INFORMATION SET
     info = build_information_set(
-        index[3], market=market, macro=macro, events=events
+        decision_time=index[3], market=market, macro=macro, events=events
     )
     if info.market_row is None:
         raise RuntimeError("research gate: missing point-in-time market row")
 
     # A/B/C: one protocol, one fold generator, one prediction index identity.
     prediction_index_hash = canonical_json_hash([ts.isoformat() for ts in index[5:]])
+    folds = common_walk_forward_folds(
+        n_rows=len(index), initial_train_size=5, test_size=1, horizon=5
+    )
+    folds_hash = folds_identity_hash(folds)
     protocols = {
         name: ABCProtocol(
             lockbox_start=index[5].date(), lockbox_end=index[-1].date(),
             purge_gap=5, horizon=5, transaction_cost_bps=5.0, slippage_bps=5.0,
-            observations=7, prediction_index_hash=prediction_index_hash,
-            dataset_hash="ci-dataset", code_version="ci-code", protocol_version="2026-09-05",
+            observations=len(index), prediction_index_hash=prediction_index_hash,
+            dataset_hash="ci-dataset", code_version="ci-code",
+            protocol_version="2026-09-05", folds_hash=folds_hash,
         )
         for name in ("A", "B", "C")
     }
     assert_same_abc_protocol(protocols)
-    folds = common_walk_forward_folds(len(index), train_size=5, test_size=1, step=1, purge=5)
     if not folds:
         raise RuntimeError("research gate: no valid shared A/B/C folds")
 
