@@ -1,0 +1,39 @@
+name: Research Gate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - feature/final-lockbox-abc-financial
+      - feature/historical-financial-protocol-20260905
+
+permissions:
+  contents: read
+
+jobs:
+  research-gate:
+    name: DATA → AUDIT → INFORMATION SET → A/B/C → LOCKBOX → BACKTEST → REPORT
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package and test dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -e '.[test]'
+
+      - name: Run complete regression suite
+        run: python -m pytest -q
+
+      - name: Run fail-closed research lifecycle gate
+        run: python scripts/research_gate.py
+
+      - name: Verify no uncommitted changes were produced
+        run: git diff --exit-code
