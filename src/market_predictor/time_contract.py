@@ -49,6 +49,30 @@ def assert_point_in_time(
         raise ValueError("Invalid target horizon: target ends at or before decision")
 
 
+def assert_market_target_contract(index: pd.Index, horizon: int) -> None:
+    """Validate chronological market timestamps against a future target horizon.
+
+    The decision timestamp is the current market observation and the target end
+    is the market observation ``horizon`` steps ahead. The final observations
+    without a known target are excluded from the temporal check.
+    """
+    if horizon < 1:
+        raise ValueError("horizon must be >= 1")
+    if not isinstance(index, pd.DatetimeIndex):
+        raise TypeError("market index must be a DatetimeIndex")
+
+    market = pd.DatetimeIndex(pd.to_datetime(index, utc=True))
+    if not market.is_monotonic_increasing:
+        raise ValueError("Market index must be chronological")
+    if market.has_duplicates:
+        raise ValueError("Market index must not contain duplicates")
+
+    decision = pd.Series(market, index=range(len(market)))
+    target_end = decision.shift(-horizon)
+    valid = target_end.notna()
+    assert_point_in_time(decision.loc[valid], decision.loc[valid], target_end.loc[valid])
+
+
 def next_session_decision_time(
     index: pd.DatetimeIndex,
     available_at: pd.Timestamp,
