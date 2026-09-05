@@ -9,6 +9,7 @@ import pandas as pd
 from .abc_protocol import ABCProtocol, assert_same_abc_protocol
 from .backtest import Fold
 from .experiments import ExperimentResult, run_feature_ablation
+from .reproducibility import canonical_json_hash
 
 
 @dataclass(frozen=True)
@@ -41,12 +42,30 @@ class ABCExecutionPlan:
                 raise ValueError("shared fold exceeds the observation index")
 
 
+def _prediction_index_for_folds(observation_index: pd.Index, folds: Sequence[Fold]) -> pd.Index:
+    """Return exactly the OOS observations implied by the shared fold sequence."""
+    pieces = [observation_index[fold.test_start:fold.test_end] for fold in folds]
+    if not pieces:
+        return observation_index[:0]
+    return pieces[0].append(pieces[1:])
+
+
+def _prediction_index_hash(index: pd.Index) -> str:
+    return canonical_json_hash([timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp) for timestamp in index])
+
+
 def build_abc_execution_plan(*, protocol: ABCProtocol, folds: Sequence[Fold], observation_index: pd.Index, target: str = "target") -> ABCExecutionPlan:
     """Construct and validate the only execution plan accepted by A/B/C."""
     plan = ABCExecutionPlan(protocol, tuple(folds), observation_index.copy(), target)
     plan.validate()
     if len(plan.observation_index) != protocol.observations:
         raise ValueError("protocol observations do not match the shared observation index")
+    expected_index = _prediction_index_for_folds(plan.observation_index, plan.folds)
+    if not expected_index.is_unique:
+        raise ValueError("shared folds must produce a unique OOS prediction index")
+    expected_hash = _prediction_index_hash(expected_index)
+    if protocol.prediction_index_hash != expected_hash:
+        raise ValueError("protocol prediction_index_hash does not match the shared fold OOS index")
     return plan
 
 
@@ -57,6 +76,10 @@ def execute_abc(data: pd.DataFrame, *, plan: ABCExecutionPlan, macro_features: S
         raise ValueError("A/B/C data must use the exact shared observation index")
     if plan.target not in data.columns:
         raise ValueError(f"missing target column: {plan.target}")
+    expected_index = _prediction_index_for_folds(plan.observation_index, plan.folds)
+    expected_hash = _prediction_index_hash(expected_index)
+    if plan.protocol.prediction_index_hash != expected_hash:
+        raise ValueError("protocol prediction_index_hash does not match the execution plan")
     results = run_feature_ablation(
         data,
         list(plan.folds),
@@ -70,11 +93,15 @@ def execute_abc(data: pd.DataFrame, *, plan: ABCExecutionPlan, macro_features: S
     if not results:
         raise ValueError("A/B/C execution returned no experiments")
     reference_index = results[0].predictions.index
-    if not reference_index.equals(plan.observation_index[plan.folds[0].test_start:plan.folds[-1].test_end]):
-        raise ValueError("A/B/C predictions do not match the protocol test observations")
+    if not reference_index.equals(expected_index):
+        raise ValueError("A/B/C predictions do not match the shared fold OOS observations")
+    if _prediction_index_hash(reference_index) != plan.protocol.prediction_index_hash:
+        raise ValueError("A/B/C prediction index hash does not match the frozen protocol")
     for result in results[1:]:
         if not result.predictions.index.equals(reference_index):
             raise ValueError("A/B/C predictions diverged in OOS observations")
+        if _prediction_index_hash(result.predictions.index) != plan.protocol.prediction_index_hash:
+            raise ValueError("A/B/C prediction index hash diverged from the frozen protocol")
     return results
 
 
