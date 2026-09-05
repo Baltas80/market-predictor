@@ -23,6 +23,7 @@ def experiences(rows: int = 40) -> pd.DataFrame:
                 "probability_up": probability,
                 "confidence": 0.6,
                 "position": position,
+                "entry_price": 100.0 + i,
                 "notional": 100_000.0,
                 "realized_return": realized,
             }
