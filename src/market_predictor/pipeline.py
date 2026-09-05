@@ -51,7 +51,7 @@ def run_baseline(
         test_size=test_size,
         purge=horizon,
     )
-    return walk_forward_classification(data, FEATURE_COLUMNS, "target", folds)
+    return walk_forward_classification(data, FEATURE_COLUMNS, "target", folds, horizon=horizon)
 
 
 def run_final_lockbox(
@@ -73,7 +73,7 @@ def run_final_lockbox(
         raise ValueError("not enough observations for lockbox train, purge, and test")
 
     fold = Fold(0, train_end, train_end + horizon, n_rows)
-    return walk_forward_classification(data, FEATURE_COLUMNS, "target", [fold])
+    return walk_forward_classification(data, FEATURE_COLUMNS, "target", [fold], horizon=horizon)
 
 
 def _final_lockbox_fold(data: pd.DataFrame, horizon: int, test_fraction: float) -> Fold:
