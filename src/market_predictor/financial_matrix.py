@@ -18,35 +18,21 @@ def _random_probabilities(size: int, seed: int) -> np.ndarray:
 
 
 def _benchmark_metrics(close: pd.Series, periods_per_year: int) -> dict[str, float]:
-    returns = close.astype(float).shift(-1).dropna()
+    """Compute benchmark metrics from actual close-to-close percentage returns."""
+    returns = close.astype(float).pct_change().dropna()
     equity = (1.0 + returns).cumprod()
     std = returns.std(ddof=1)
     downside = np.sqrt(np.mean(np.minimum(returns.to_numpy(), 0.0) ** 2))
     return {
-        "buy_and_hold_total_return": float(equity.iloc[-1] - 1.0),
-        "buy_and_hold_max_drawdown": float((equity / equity.cummax() - 1.0).min()),
+        "buy_and_hold_total_return": float(equity.iloc[-1] - 1.0) if not equity.empty else float("nan"),
+        "buy_and_hold_max_drawdown": float((equity / equity.cummax() - 1.0).min()) if not equity.empty else float("nan"),
         "buy_and_hold_sharpe": float(returns.mean() / std * np.sqrt(periods_per_year)) if len(returns) > 1 and std > 0 else float("nan"),
         "buy_and_hold_sortino": float(returns.mean() / downside * np.sqrt(periods_per_year)) if len(returns) > 1 and downside > 0 else float("nan"),
     }
 
 
-def evaluate_financial_matrix(
-    predictions: dict[str, pd.DataFrame],
-    *,
-    benchmark: pd.DataFrame,
-    probability_column: str = "prob_up",
-    threshold: float = 0.5,
-    periods_per_year: int = 252,
-    costs_bps: tuple[float, ...] = COST_BPS,
-    slippage_bps: tuple[float, ...] = SLIPPAGE_BPS,
-    random_seed: int = 42,
-) -> pd.DataFrame:
-    """Evaluate fixed OOS predictions across a pre-declared 3x2 cost grid.
-
-    Predictions are consumed as-is. This function never retrains, tunes a
-    threshold, changes the lockbox or selects a winner. Buy-and-hold and a
-    deterministic random signal are reference strategies only.
-    """
+def evaluate_financial_matrix(predictions: dict[str, pd.DataFrame], *, benchmark: pd.DataFrame, probability_column: str = "prob_up", threshold: float = 0.5, periods_per_year: int = 252, costs_bps: tuple[float, ...] = COST_BPS, slippage_bps: tuple[float, ...] = SLIPPAGE_BPS, random_seed: int = 42) -> pd.DataFrame:
+    """Evaluate fixed OOS predictions across a pre-declared 3x2 cost grid."""
     if not predictions:
         raise ValueError("at least one prediction set is required")
     if not costs_bps or not slippage_bps:
@@ -71,33 +57,12 @@ def evaluate_financial_matrix(
     for experiment_name, frame in all_predictions.items():
         for cost in costs_bps:
             for slippage in slippage_bps:
-                _, metrics = backtest_long_only(
-                    frame[[probability_column, "close"]],
-                    probability_column=probability_column,
-                    threshold=threshold,
-                    transaction_cost_bps=float(cost),
-                    slippage_bps=float(slippage),
-                    periods_per_year=periods_per_year,
-                )
-                rows.append({
-                    "experiment": experiment_name,
-                    "transaction_cost_bps": float(cost),
-                    "slippage_bps": float(slippage),
-                    **metrics,
-                    **benchmark_metrics,
-                })
-
-    return pd.DataFrame(rows).sort_values(
-        ["experiment", "transaction_cost_bps", "slippage_bps"]
-    ).reset_index(drop=True)
+                _, metrics = backtest_long_only(frame[[probability_column, "close"]], probability_column=probability_column, threshold=threshold, transaction_cost_bps=float(cost), slippage_bps=float(slippage), periods_per_year=periods_per_year)
+                rows.append({"experiment": experiment_name, "transaction_cost_bps": float(cost), "slippage_bps": float(slippage), **metrics, **benchmark_metrics})
+    return pd.DataFrame(rows).sort_values(["experiment", "transaction_cost_bps", "slippage_bps"]).reset_index(drop=True)
 
 
-def period_stability(
-    backtest: pd.DataFrame,
-    *,
-    periods: dict[str, tuple[str, str]],
-    periods_per_year: int = 252,
-) -> pd.DataFrame:
+def period_stability(backtest: pd.DataFrame, *, periods: dict[str, tuple[str, str]], periods_per_year: int = 252) -> pd.DataFrame:
     """Recompute fixed-backtest metrics over pre-declared chronological periods."""
     if periods_per_year <= 0:
         raise ValueError("periods_per_year must be positive")
@@ -120,15 +85,5 @@ def period_stability(
         equity = (1.0 + returns).cumprod()
         std = returns.std(ddof=1)
         downside = np.sqrt(np.mean(np.minimum(returns.to_numpy(), 0.0) ** 2))
-        rows.append({
-            "period": name,
-            "start": subset.index.min(),
-            "end": subset.index.max(),
-            "observations": len(subset),
-            "total_return": float(equity.iloc[-1] - 1.0),
-            "max_drawdown": float((equity / equity.cummax() - 1.0).min()),
-            "sharpe": float(returns.mean() / std * np.sqrt(periods_per_year)) if len(returns) > 1 and std > 0 else float("nan"),
-            "sortino": float(returns.mean() / downside * np.sqrt(periods_per_year)) if len(returns) > 1 and downside > 0 else float("nan"),
-            "turnover": float(subset["position_change"].sum()),
-        })
+        rows.append({"period": name, "start": subset.index.min(), "end": subset.index.max(), "observations": len(subset), "total_return": float(equity.iloc[-1] - 1.0), "max_drawdown": float((equity / equity.cummax() - 1.0).min()), "sharpe": float(returns.mean() / std * np.sqrt(periods_per_year)) if len(returns) > 1 and std > 0 else float("nan"), "sortino": float(returns.mean() / downside * np.sqrt(periods_per_year)) if len(returns) > 1 and downside > 0 else float("nan"), "turnover": float(subset["position_change"].sum())})
     return pd.DataFrame(rows)
