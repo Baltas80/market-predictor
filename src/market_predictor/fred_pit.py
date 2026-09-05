@@ -1,25 +1,35 @@
-"""Point-in-time auditing for FRED vintage observations."""
+"""Audits for FRED vintage-aware point-in-time ingestion."""
 from __future__ import annotations
 
 import pandas as pd
 
 
-def audit_fred_point_in_time(observations: pd.DataFrame) -> None:
+def audit_fred_point_in_time(observations: pd.DataFrame) -> pd.DataFrame:
+    """Return one audit row per FRED observation/vintage.
+
+    FRED's realtime fields provide vintage dates, not a guaranteed intraday
+    release timestamp. The audit therefore treats ``realtime_start`` as the
+    earliest defensible date-level availability marker and never invents a
+    release clock time.
+    """
     required = {"series_id", "date", "value", "realtime_start", "realtime_end"}
     missing = required - set(observations.columns)
     if missing:
         raise ValueError(f"FRED observations missing columns: {sorted(missing)}")
-    frame = observations.copy()
+    data = observations.copy()
     for column in ("date", "realtime_start", "realtime_end"):
-        frame[column] = pd.to_datetime(frame[column], utc=True, errors="coerce")
-    if frame[["date", "realtime_start", "realtime_end"]].isna().any().any():
-        raise ValueError("FRED vintage timestamps must be valid")
-    if (frame["realtime_end"] < frame["realtime_start"]).any():
-        raise ValueError("FRED realtime_end must not precede realtime_start")
-    if (frame["realtime_start"] < frame["date"]).any():
-        raise ValueError("FRED vintage cannot become available before the observation date")
-    if not pd.to_numeric(frame["value"], errors="coerce").notna().all():
-        raise ValueError("FRED values must be numeric")
+        data[column] = pd.to_datetime(data[column], utc=True, errors="coerce")
+    data["value"] = pd.to_numeric(data["value"], errors="coerce")
+    if data[["date", "realtime_start", "realtime_end", "value"]].isna().any().any():
+        raise ValueError("FRED PIT audit found invalid timestamps or values")
+    if (data["realtime_end"] < data["realtime_start"]).any():
+        raise ValueError("FRED realtime_end cannot precede realtime_start")
+    if (data["realtime_start"].dt.normalize() < data["date"].dt.normalize()).any():
+        raise ValueError("FRED vintage cannot become available before its observation date")
+    duplicate_key = ["series_id", "date", "realtime_start"]
+    if data.duplicated(duplicate_key).any():
+        raise ValueError("duplicate FRED vintage keys")
+    return data.sort_values(["series_id", "date", "realtime_start"]).reset_index(drop=True)
 
 
 def assert_fred_point_in_time(observations: pd.DataFrame) -> None:
