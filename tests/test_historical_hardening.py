@@ -11,17 +11,18 @@ def _market(index):
     return pd.DataFrame({"open": [100.0] * len(index), "high": [101.0] * len(index), "low": [99.0] * len(index), "close": [100.0] * len(index), "volume": [1.0] * len(index)}, index=index)
 
 
-def test_information_set_rejects_market_timezone_mismatch():
-    market = _market(pd.DatetimeIndex(["2024-01-02 21:00:00+00:00"]))
-    decision = pd.Timestamp("2024-01-02 16:00:00-05:00")
-    with pytest.raises(ValueError, match="timezone"):
+def test_information_set_rejects_naive_market_index():
+    market = _market(pd.DatetimeIndex(["2024-01-02 21:00:00"]))
+    decision = pd.Timestamp("2024-01-02 21:00:00+00:00")
+    with pytest.raises(ValueError, match="timezone-aware"):
         build_information_set(decision_time=decision, market=market)
 
 
-def test_information_set_accepts_explicitly_matching_timezone():
+def test_information_set_accepts_equivalent_aware_timezones():
     close = pd.Timestamp("2024-01-02 16:00:00", tz="America/New_York")
     market = _market(pd.DatetimeIndex([close]))
-    result = build_information_set(decision_time=close, market=market)
+    decision = pd.Timestamp("2024-01-02 21:00:00+00:00")
+    result = build_information_set(decision_time=decision, market=market)
     assert result.market_row["close"] == 100.0
 
 
