@@ -10,6 +10,7 @@ from .event_schema import MarketEvent
 from .experiments import ExperimentResult, run_feature_ablation
 from .features import add_market_features, make_target
 from .financial import backtest_long_only
+from .time_contract import assert_market_target_contract
 
 FEATURE_COLUMNS = [
     "return_1d",
@@ -24,6 +25,7 @@ FEATURE_COLUMNS = [
 def prepare_baseline_data(df: pd.DataFrame, horizon: int = 5) -> pd.DataFrame:
     """Build model-ready features and remove rows whose target is unknown."""
     data = add_market_features(df)
+    assert_market_target_contract(data.index, horizon)
     data["target"] = make_target(data, horizon=horizon)
     return data.dropna(subset=FEATURE_COLUMNS + ["target"]).copy()
 
