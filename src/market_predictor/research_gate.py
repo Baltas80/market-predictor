@@ -3,6 +3,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pandas as pd
+
+from market_predictor.session_calendar import audit_market_timestamps
+
 
 @dataclass(frozen=True)
 class ResearchGateState:
@@ -28,3 +32,15 @@ class ResearchGateState:
         self.assert_can_backtest()
         if not self.financial_evaluation_complete:
             raise RuntimeError("final report blocked: financial evaluation is incomplete")
+
+
+def assert_market_session_audit(index: pd.DatetimeIndex) -> pd.DataFrame:
+    """Fail closed on non-session dates and timestamps after the applicable close."""
+    audit = audit_market_timestamps(index)
+    invalid = audit.loc[(~audit["valid_market_day"]) | audit["after_close"]]
+    if not invalid.empty:
+        raise RuntimeError(
+            "market session audit failed: timestamps fall on a non-session day "
+            "or after the applicable market close"
+        )
+    return audit
