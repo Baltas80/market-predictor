@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pandas as pd
 
-from market_predictor.data_sources import _gdelt_category, gdelt_events_to_market_events
+from market_predictor.data_sources import (
+    _gdelt_category,
+    align_fred_point_in_time,
+    gdelt_events_to_market_events,
+)
 
 
 def test_gdelt_category_uses_exact_sanctions_code() -> None:
@@ -33,3 +37,17 @@ def test_gdelt_event_conversion_deduplicates_and_preserves_availability() -> Non
     assert len(result) == 2
     assert result.iloc[0]["published_at"] == "2020-01-01T12:00:00Z"
     assert result.iloc[0]["event_id"] == "1"
+
+
+def test_fred_alignment_does_not_use_same_day_vintage_by_default() -> None:
+    observations = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2020-01-01", "2020-01-01"]),
+            "value": [1.0, 2.0],
+            "realtime_start": pd.to_datetime(["2020-01-01", "2020-01-03"]),
+        }
+    )
+    market_index = pd.date_range("2020-01-01", periods=4, freq="D")
+    aligned = align_fred_point_in_time(observations, market_index)
+    assert pd.isna(aligned.loc["2020-01-01", "value"])
+    assert aligned.loc["2020-01-04", "value"] == 2.0
