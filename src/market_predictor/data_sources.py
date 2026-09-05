@@ -100,6 +100,49 @@ def load_fred_observations(
     return frame.dropna(subset=["date", "value"]).sort_values(["date", "realtime_start"])
 
 
+def align_fred_point_in_time(
+    observations: pd.DataFrame,
+    market_index: pd.DatetimeIndex,
+    *,
+    conservative_session_lag: int = 1,
+) -> pd.DataFrame:
+    """Align FRED vintages to market dates without using later revisions.
+
+    FRED vintage dates are date-level availability markers, not intraday
+    release timestamps. By default the selected vintage must precede the
+    market observation by one calendar day. This is deliberately conservative
+    until exact release times are added for each series.
+    """
+    required = {"date", "value", "realtime_start"}
+    missing = required - set(observations.columns)
+    if missing:
+        raise ValueError(f"FRED observations missing columns: {sorted(missing)}")
+    if conservative_session_lag < 0:
+        raise ValueError("conservative_session_lag must be >= 0")
+    market = pd.DatetimeIndex(market_index).tz_localize(None).normalize()
+    vintages = observations.copy()
+    vintages["date"] = pd.to_datetime(vintages["date"], errors="coerce").dt.tz_localize(None)
+    vintages["realtime_start"] = pd.to_datetime(vintages["realtime_start"], errors="coerce").dt.tz_localize(None)
+    vintages = vintages.dropna(subset=["date", "realtime_start", "value"])
+    rows: list[dict[str, object]] = []
+    for timestamp in market:
+        cutoff = timestamp - pd.Timedelta(days=conservative_session_lag)
+        eligible = vintages[vintages["realtime_start"] <= cutoff]
+        if eligible.empty:
+            rows.append({"date": timestamp, "value": pd.NA, "vintage": pd.NaT})
+            continue
+        # Pick the latest vintage for each observation date, then the latest
+        # observation whose vintage was known by the cutoff.
+        latest = eligible.sort_values("realtime_start").drop_duplicates("date", keep="last")
+        latest = latest[latest["date"] <= timestamp]
+        if latest.empty:
+            rows.append({"date": timestamp, "value": pd.NA, "vintage": pd.NaT})
+            continue
+        row = latest.sort_values("date").iloc[-1]
+        rows.append({"date": timestamp, "value": row["value"], "vintage": row["realtime_start"]})
+    return pd.DataFrame(rows).set_index("date")
+
+
 def _gdelt_category(event_root_code: str, event_code: str, actor_text: str) -> str:
     """Conservative CAMEO-to-project mapping.
 
