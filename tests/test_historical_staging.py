@@ -3,6 +3,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from market_predictor.historical_adapters import _fred_vintage_windows
 from market_predictor.historical_staging import stage_historical
 
 
@@ -49,12 +50,41 @@ def test_staging_runs_all_phases_and_writes_manifest(tmp_path: Path):
     assert [stage["status"] for stage in result["stages"]] == [
         "complete", "complete", "complete", "complete", "complete", "complete", "admissible"
     ]
-    assert (tmp_path / "raw" / "market_stooq.csv").exists()
+    assert (tmp_path / "raw" / "market.csv").exists()
     assert (tmp_path / "raw" / "macro_fred.csv").exists()
     assert (tmp_path / "normalized" / "market.csv").exists()
     assert (tmp_path / "normalized" / "macro.csv").exists()
     assert (tmp_path / "source_manifest.json").exists()
     assert (tmp_path / "staging_result.json").exists()
+
+
+def test_staging_records_yahoo_fallback_provenance(tmp_path: Path):
+    market = _market("", "").copy()
+    market.attrs["source_id"] = "YahooFinance_GSPC"
+
+    result = stage_historical(
+        tmp_path,
+        fred_api_key="test-key",
+        include_gdelt=False,
+        include_sec=False,
+        market_fetcher=lambda start, end: market,
+        fred_fetcher=_macro,
+    )
+
+    assert result["status"] == "admissible_with_source_limits"
+    assert any("Yahoo Finance" in item for item in result["limitations"])
+    manifest_text = (tmp_path / "source_manifest.json").read_text(encoding="utf-8")
+    assert "YahooFinance_GSPC" in manifest_text
+
+
+def test_fred_vintage_windows_bound_long_requests():
+    windows = _fred_vintage_windows("2000-01-03", "2025-12-31")
+    assert windows[0] == ("2000-01-03", "2001-01-01")
+    assert windows[-1][1] == "2025-12-31"
+    assert all(
+        pd.Timestamp(end) - pd.Timestamp(start) <= pd.Timedelta(days=364)
+        for start, end in windows
+    )
 
 
 def test_staging_fails_before_download_without_fred_credentials(tmp_path: Path):
