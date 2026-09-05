@@ -6,7 +6,7 @@ from typing import Mapping, Sequence
 
 import pandas as pd
 
-from .abc_protocol import ABCProtocol, assert_same_abc_protocol
+from .abc_protocol import ABCProtocol, assert_same_abc_protocol, folds_identity_hash
 from .backtest import Fold
 from .experiments import ExperimentResult, run_feature_ablation
 from .reproducibility import canonical_json_hash
@@ -40,6 +40,8 @@ class ABCExecutionPlan:
                 raise ValueError("shared fold violates the protocol purge gap")
             if fold.test_end > len(self.observation_index):
                 raise ValueError("shared fold exceeds the observation index")
+        if self.protocol.folds_hash and self.protocol.folds_hash != folds_identity_hash(self.folds):
+            raise ValueError("protocol folds_hash does not match the shared fold sequence")
 
 
 def _prediction_index_for_folds(observation_index: pd.Index, folds: Sequence[Fold]) -> pd.Index:
@@ -80,6 +82,8 @@ def execute_abc(data: pd.DataFrame, *, plan: ABCExecutionPlan, macro_features: S
     expected_hash = _prediction_index_hash(expected_index)
     if plan.protocol.prediction_index_hash != expected_hash:
         raise ValueError("protocol prediction_index_hash does not match the execution plan")
+    if plan.protocol.folds_hash and plan.protocol.folds_hash != folds_identity_hash(plan.folds):
+        raise ValueError("protocol folds_hash does not match the execution plan")
     results = run_feature_ablation(
         data,
         list(plan.folds),
