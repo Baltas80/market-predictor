@@ -25,11 +25,14 @@ def _require_aware_index(index: pd.DatetimeIndex, name: str) -> None:
 
 def _require_compatible_timezone(index: pd.DatetimeIndex, decision: pd.Timestamp, name: str) -> None:
     _require_aware_index(index, name)
-    if str(index.tz) != str(decision.tz):
-        raise ValueError(
-            f"{name} index timezone {index.tz} is incompatible with decision_time timezone {decision.tz}; "
-            "normalize both explicitly before building the information set"
-        )
+    # Different aware timezone representations are valid when converted to the
+    # same UTC clock. The important invariant is that naive timestamps can never
+    # be silently compared with an aware decision clock.
+    try:
+        index.tz_convert("UTC")
+        decision.tz_convert("UTC")
+    except Exception as exc:
+        raise ValueError(f"{name} timezone cannot be normalized to UTC") from exc
 
 
 def build_information_set(*, decision_time: pd.Timestamp, market: pd.DataFrame, macro: pd.DataFrame | None = None, events: pd.DataFrame | None = None, market_available_at: str | None = None, macro_available_at: str = "vintage_start", event_available_at: str = "available_at") -> InformationSet:
