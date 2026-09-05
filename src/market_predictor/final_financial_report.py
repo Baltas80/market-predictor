@@ -21,7 +21,6 @@ class FinancialReport:
 
 def _stability_rows(
     predictions: dict[str, pd.DataFrame],
-    benchmark: pd.DataFrame,
     *,
     probability_column: str,
     threshold: float,
@@ -70,7 +69,6 @@ def build_final_financial_report(
     )
     stability = _stability_rows(
         predictions,
-        benchmark,
         probability_column=probability_column,
         threshold=threshold,
         transaction_cost_bps=transaction_cost_bps,
@@ -83,6 +81,18 @@ def build_final_financial_report(
         "stability": stability.to_dict(orient="records"),
     }
     return FinancialReport(matrix=matrix, stability=stability, result_hash=canonical_json_hash(payload))
+
+
+def _markdown_table(frame: pd.DataFrame) -> str:
+    """Render a simple dependency-free GitHub Markdown table."""
+    if frame.empty:
+        return "_No rows._"
+    columns = [str(column) for column in frame.columns]
+    lines = ["| " + " | ".join(columns) + " |", "| " + " | ".join("---" for _ in columns) + " |"]
+    for row in frame.itertuples(index=False, name=None):
+        values = [str(value).replace("|", "\\|") for value in row]
+        lines.append("| " + " | ".join(values) + " |")
+    return "\n".join(lines)
 
 
 def write_financial_report(report: FinancialReport, output_dir: str | Path) -> dict[str, Path]:
@@ -105,7 +115,7 @@ def write_financial_report(report: FinancialReport, output_dir: str | Path) -> d
     json_path.write_text(json.dumps(payload, sort_keys=True, default=str, indent=2) + "\n", encoding="utf-8")
     markdown = "# Final financial report\n\n"
     markdown += f"Result hash: `{report.result_hash}`\n\n"
-    markdown += "## Matrix\n\n" + report.matrix.to_markdown(index=False) + "\n\n"
-    markdown += "## Temporal stability\n\n" + report.stability.to_markdown(index=False) + "\n"
+    markdown += "## Matrix\n\n" + _markdown_table(report.matrix) + "\n\n"
+    markdown += "## Temporal stability\n\n" + _markdown_table(report.stability) + "\n"
     markdown_path.write_text(markdown, encoding="utf-8")
     return {"matrix": matrix_path, "stability": stability_path, "json": json_path, "markdown": markdown_path}
