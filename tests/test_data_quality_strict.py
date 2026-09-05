@@ -14,6 +14,13 @@ def test_market_requires_all_ohlcv_columns():
     assert not next(c for c in checks if c.name == "market_columns").passed
 
 
+def test_market_rejects_non_datetime_index():
+    data = frame()
+    data.index = ["2025-01-01", "2025-01-02"]
+    checks = check_market(data)
+    assert not next(c for c in checks if c.name == "market_index_datetime").passed
+
+
 def test_market_rejects_nonpositive_prices():
     data = frame(); data.loc[data.index[0], "close"] = 0
     assert not next(c for c in check_market(data) if c.name == "market_prices_positive").passed
