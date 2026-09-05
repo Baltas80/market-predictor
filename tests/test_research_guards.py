@@ -6,7 +6,7 @@ from market_predictor.abc_protocol import ABCProtocol, SharedExperimentProtocol,
 from market_predictor.abc_execution_guard import build_abc_execution_plan
 from market_predictor.backtest import Fold
 from market_predictor.information_set import build_information_set
-from market_predictor.research_gate import ResearchGateState
+from market_predictor.research_gate import ResearchGateState, assert_market_session_audit
 from market_predictor.temporal_audit import assert_no_future_information
 
 
@@ -65,3 +65,16 @@ def test_research_gate_is_fail_closed():
         state.assert_can_generate_predictions()
     with pytest.raises(RuntimeError):
         state.assert_can_backtest()
+
+
+def test_research_gate_rejects_non_session_and_after_close_timestamps():
+    valid = pd.DatetimeIndex([pd.Timestamp("2025-01-02 21:00", tz="UTC")])
+    audit = assert_market_session_audit(valid)
+    assert bool(audit.iloc[0]["valid_market_day"])
+
+    with pytest.raises(RuntimeError, match="market session audit"):
+        assert_market_session_audit(pd.DatetimeIndex([pd.Timestamp("2025-01-04 16:00", tz="UTC")]))
+    with pytest.raises(RuntimeError, match="market session audit"):
+        assert_market_session_audit(pd.DatetimeIndex([pd.Timestamp("2025-01-02 22:00", tz="UTC")]))
+    with pytest.raises(RuntimeError, match="market session audit"):
+        assert_market_session_audit(pd.DatetimeIndex([pd.Timestamp("2025-11-27 22:00", tz="UTC")]))
