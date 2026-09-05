@@ -52,3 +52,9 @@ def test_historical_readiness_rejects_unsorted_data():
     idx = pd.to_datetime(["2025-01-02", "2025-01-01"], utc=True)
     with pytest.raises(ValueError):
         validate_historical_frame(pd.DataFrame({"close": [2.0,1.0]}, index=idx), required_columns=("close",))
+
+
+def test_historical_readiness_rejects_non_finite_numeric_data():
+    idx = pd.date_range("2025-01-01", periods=2, tz="UTC")
+    with pytest.raises(ValueError):
+        validate_historical_frame(pd.DataFrame({"close": [1.0, float("inf")]}, index=idx), required_columns=("close",))
