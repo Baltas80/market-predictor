@@ -4,15 +4,14 @@ from __future__ import annotations
 import pandas as pd
 
 
-_FRED_OPEN_ENDED = "9999-12-31"
-
-
-def _fred_datetime(values: pd.Series) -> pd.Series:
-    """Parse FRED dates while preserving its 9999-12-31 open-ended sentinel."""
-    raw = values.astype("string")
-    open_ended = raw.str.startswith(_FRED_OPEN_ENDED)
-    parsed = pd.to_datetime(raw.mask(open_ended), utc=True, errors="coerce")
-    return parsed.fillna(pd.Timestamp.max.tz_localize("UTC")).where(open_ended, parsed)
+def _parse_fred_timestamp(series: pd.Series) -> pd.Series:
+    """Parse FRED timestamps while preserving its open-ended 9999-12-31 sentinel."""
+    values = series.astype("string")
+    open_ended = values.eq("9999-12-31")
+    parsed = pd.to_datetime(values.mask(open_ended), utc=True, errors="coerce")
+    if open_ended.any():
+        parsed.loc[open_ended] = pd.Timestamp.max.tz_localize("UTC")
+    return parsed
 
 
 def audit_fred_point_in_time(observations: pd.DataFrame) -> pd.DataFrame:
@@ -21,8 +20,8 @@ def audit_fred_point_in_time(observations: pd.DataFrame) -> pd.DataFrame:
     FRED's realtime fields provide vintage dates, not a guaranteed intraday
     release timestamp. The audit therefore treats ``realtime_start`` as the
     earliest defensible date-level availability marker and never invents a
-    release clock time. FRED's ``9999-12-31`` open-ended sentinel is normalized
-    to pandas' maximum representable UTC timestamp.
+    release clock time. FRED's ``9999-12-31`` open-ended sentinel is mapped to
+    pandas' maximum representable UTC timestamp.
     """
     required = {"series_id", "date", "value", "realtime_start", "realtime_end"}
     missing = required - set(observations.columns)
@@ -31,7 +30,7 @@ def audit_fred_point_in_time(observations: pd.DataFrame) -> pd.DataFrame:
     data = observations.copy()
     data["date"] = pd.to_datetime(data["date"], utc=True, errors="coerce")
     data["realtime_start"] = pd.to_datetime(data["realtime_start"], utc=True, errors="coerce")
-    data["realtime_end"] = _fred_datetime(data["realtime_end"])
+    data["realtime_end"] = _parse_fred_timestamp(data["realtime_end"])
     data["value"] = pd.to_numeric(data["value"], errors="coerce")
     if data[["date", "realtime_start", "realtime_end", "value"]].isna().any().any():
         raise ValueError("FRED PIT audit found invalid timestamps or values")
