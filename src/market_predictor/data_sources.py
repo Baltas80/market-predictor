@@ -51,11 +51,13 @@ def load_stooq_daily(symbol: str = "^spx", start: str | None = None, end: str | 
     if start: params["d1"] = pd.Timestamp(start).strftime("%Y%m%d")
     if end: params["d2"] = pd.Timestamp(end).strftime("%Y%m%d")
     response = _get(STOOQ_DAILY_URL, timeout=60, params=params)
-    frame = pd.read_csv(StringIO(response.text), parse_dates=["Date"])
-    frame.columns = [column.lower() for column in frame.columns]
+    frame = pd.read_csv(StringIO(response.text))
+    frame.columns = [str(column).strip().lower() for column in frame.columns]
     required = ["date", "open", "high", "low", "close", "volume"]
     missing = set(required) - set(frame.columns)
     if missing: raise ValueError(f"Stooq response missing columns: {sorted(missing)}")
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+    if frame["date"].isna().any(): raise ValueError("Stooq response contains invalid dates")
     raw_dates = frame["date"].dt.date
     if any(not _is_valid_session_date(day) for day in raw_dates):
         invalid = sorted({day.isoformat() for day in raw_dates if not _is_valid_session_date(day)})
