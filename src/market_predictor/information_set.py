@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
 
 import pandas as pd
 
@@ -19,23 +18,22 @@ class InformationSet:
     event_rows: pd.DataFrame
 
 
-def build_information_set(
-    *,
-    decision_time: pd.Timestamp,
-    market: pd.DataFrame,
-    macro: pd.DataFrame | None = None,
-    events: pd.DataFrame | None = None,
-    market_available_at: str | None = None,
-    macro_available_at: str = "vintage_start",
-    event_available_at: str = "available_at",
-) -> InformationSet:
-    """Return only data demonstrably available by ``decision_time``.
+def _require_aware_index(index: pd.DatetimeIndex, name: str) -> None:
+    if index.tz is None:
+        raise ValueError(f"{name} index must be timezone-aware")
 
-    The market table is interpreted as session observations whose index is the
-    decision clock. Macro data is admitted using its vintage availability;
-    events use their explicit availability timestamp. No forward fill or
-    future-value substitution is performed here.
-    """
+
+def _require_compatible_timezone(index: pd.DatetimeIndex, decision: pd.Timestamp, name: str) -> None:
+    _require_aware_index(index, name)
+    if str(index.tz) != str(decision.tz):
+        raise ValueError(
+            f"{name} index timezone {index.tz} is incompatible with decision_time timezone {decision.tz}; "
+            "normalize both explicitly before building the information set"
+        )
+
+
+def build_information_set(*, decision_time: pd.Timestamp, market: pd.DataFrame, macro: pd.DataFrame | None = None, events: pd.DataFrame | None = None, market_available_at: str | None = None, macro_available_at: str = "vintage_start", event_available_at: str = "available_at") -> InformationSet:
+    """Return only data demonstrably available by ``decision_time``."""
     decision = pd.Timestamp(decision_time)
     if decision.tzinfo is None:
         raise ValueError("decision_time must be timezone-aware")
@@ -43,8 +41,17 @@ def build_information_set(
         raise TypeError("market must have a DatetimeIndex")
     if not market.index.is_monotonic_increasing or not market.index.is_unique:
         raise ValueError("market index must be chronological and unique")
+    _require_compatible_timezone(market.index, decision, "market")
 
-    eligible_market = market.loc[market.index <= decision]
+    if market_available_at is not None:
+        if market_available_at not in market.columns:
+            raise ValueError(f"market missing availability column: {market_available_at}")
+        market_available = pd.to_datetime(market[market_available_at], utc=True, errors="coerce")
+        if market_available.isna().any():
+            raise ValueError("market availability contains invalid timestamps")
+        eligible_market = market.loc[market_available <= decision]
+    else:
+        eligible_market = market.loc[market.index <= decision]
     if eligible_market.empty:
         raise ValueError("no market observation is available at decision_time")
     market_row = eligible_market.iloc[-1]
@@ -62,33 +69,16 @@ def build_information_set(
     if events is None:
         event_rows = pd.DataFrame()
     else:
-        event_rows = admitted_events_for_decision(
-            events,
-            decision,
-            available_column=event_available_at,
-        ).copy()
-
+        event_rows = admitted_events_for_decision(events, decision, available_column=event_available_at).copy()
     return InformationSet(decision, market_row, macro_rows, event_rows)
 
 
-def build_information_set_history(
-    decision_times: pd.DatetimeIndex,
-    *,
-    market: pd.DataFrame,
-    macro: pd.DataFrame | None = None,
-    events: pd.DataFrame | None = None,
-) -> list[InformationSet]:
+def build_information_set_history(decision_times: pd.DatetimeIndex, *, market: pd.DataFrame, macro: pd.DataFrame | None = None, events: pd.DataFrame | None = None) -> list[InformationSet]:
     """Reconstruct the information set independently for every decision."""
     if not isinstance(decision_times, pd.DatetimeIndex):
         raise TypeError("decision_times must be a DatetimeIndex")
     if not decision_times.is_monotonic_increasing or not decision_times.is_unique:
         raise ValueError("decision_times must be chronological and unique")
-    return [
-        build_information_set(
-            decision_time=decision,
-            market=market,
-            macro=macro,
-            events=events,
-        )
-        for decision in decision_times
-    ]
+    if decision_times.tz is None:
+        raise ValueError("decision_times index must be timezone-aware")
+    return [build_information_set(decision_time=decision, market=market, macro=macro, events=events) for decision in decision_times]
