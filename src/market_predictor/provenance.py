@@ -21,17 +21,40 @@ def dataframe_fingerprint(frame: pd.DataFrame) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 
-def source_record(path: str | Path, *, source_id: str, retrieval_method: str, retrieved_at: str) -> dict[str, object]:
-    """Create immutable file-level provenance metadata."""
+def source_record(path: str | Path, *, source_id: str, retrieval_method: str, retrieved_at: str, normalized_frame: pd.DataFrame | None = None, coverage_start: str = "", coverage_end: str = "", version: str = "", pit_policy: str = "") -> dict[str, object]:
+    """Create immutable raw/normalized provenance metadata for one source."""
     target = Path(path)
-    digest = hashlib.sha256(target.read_bytes()).hexdigest()
-    return {
+    raw_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+    record: dict[str, object] = {
         "source_id": source_id,
         "path": str(target),
-        "sha256": digest,
+        "raw_sha256": raw_hash,
+        "sha256": raw_hash,
         "bytes": target.stat().st_size,
         "retrieval_method": retrieval_method,
         "retrieved_at": retrieved_at,
+        "coverage_start": coverage_start,
+        "coverage_end": coverage_end,
+        "version": version,
+        "pit_policy": pit_policy,
+    }
+    if normalized_frame is not None:
+        record["normalized_sha256"] = dataframe_fingerprint(normalized_frame)
+    return record
+
+
+def observation_trace(*, source_id: str, raw_sha256: str, normalized_sha256: str, observation_id: str, decision_time: str, pit_policy: str, source_version: str = "") -> dict[str, str]:
+    """Record the provenance chain from source artifacts to one admitted observation."""
+    if not all((source_id, raw_sha256, normalized_sha256, observation_id, decision_time, pit_policy)):
+        raise ValueError("complete observation provenance is required")
+    return {
+        "source_id": source_id,
+        "raw_sha256": raw_sha256,
+        "normalized_sha256": normalized_sha256,
+        "observation_id": observation_id,
+        "decision_time": decision_time,
+        "pit_policy": pit_policy,
+        "source_version": source_version,
     }
 
 
