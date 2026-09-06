@@ -97,21 +97,24 @@ def test_fred_vintage_windows_bound_long_requests():
     )
 
 
-def test_fred_vintage_dates_are_discovered_before_observation_requests(monkeypatch):
-    captured = {}
-    payload = {"vintage_dates": ["2005-06-28", "2014-04-02", "2025-01-07"]}
+def test_fred_vintage_dates_are_paginated_and_sorted(monkeypatch):
+    captured = []
+    payloads = [
+        {"count": 3, "vintage_dates": ["2005-06-28", "2014-04-02"]},
+        {"count": 3, "vintage_dates": ["2025-01-07"]},
+    ]
 
     def fake_get(*args, **kwargs):
-        captured.update(kwargs.get("params", {}))
-        return SimpleNamespace(json=lambda: payload)
+        captured.append(kwargs.get("params", {}).copy())
+        return SimpleNamespace(json=lambda: payloads[len(captured) - 1])
 
     monkeypatch.setattr(historical_adapters, "_get", fake_get)
-    result = _fred_vintage_dates("test-key", "DGS10", "2000-01-03", "2025-12-31")
+    result = _fred_vintage_dates("test-key", "DGS10")
 
-    assert captured["series_id"] == "DGS10"
-    assert captured["realtime_start"] == "2000-01-03"
-    assert captured["realtime_end"] == "2025-12-31"
-    assert captured["limit"] == 10000
+    assert captured[0]["series_id"] == "DGS10"
+    assert captured[0]["offset"] == 0
+    assert captured[0]["limit"] == 10000
+    assert captured[1]["offset"] == 2
     assert result[0] == pd.Timestamp("2005-06-28", tz="UTC")
     assert result[-1] == pd.Timestamp("2025-01-07", tz="UTC")
 
@@ -122,7 +125,7 @@ def test_fetch_fred_starts_each_series_at_first_valid_pit_vintage(monkeypatch):
     monkeypatch.setattr(
         historical_adapters,
         "_fred_vintage_dates",
-        lambda api_key, series_id, start, end: pd.DatetimeIndex([pd.Timestamp("2005-06-28", tz="UTC")])
+        lambda api_key, series_id: pd.DatetimeIndex([pd.Timestamp("2005-06-28", tz="UTC")])
         if series_id == "DGS10"
         else pd.DatetimeIndex([pd.Timestamp("2000-01-03", tz="UTC")]),
     )
@@ -140,10 +143,11 @@ def test_fetch_fred_starts_each_series_at_first_valid_pit_vintage(monkeypatch):
         )
 
     monkeypatch.setattr(historical_adapters, "load_fred_observations", fake_observations)
-    result = historical_adapters.fetch_fred("test-key", "2000-01-03", "2000-12-31")
+    result = historical_adapters.fetch_fred("test-key", "2000-01-03", "2006-12-31")
 
     assert result.attrs["fred_pit_coverage"]["DGS10"]["pit_start"] == "2005-06-28"
-    assert all(window[0] != "DGS10" for window in requested_windows)
+    dgs10_windows = [window for window in requested_windows if window[0] == "DGS10"]
+    assert dgs10_windows[0][1] == "2005-06-28"
 
 
 def test_staging_fails_before_download_without_fred_credentials(tmp_path: Path):
