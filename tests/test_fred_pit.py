@@ -57,3 +57,10 @@ def test_fred_audit_rejects_duplicate_vintage_key():
     data = pd.concat([vintage_frame(), vintage_frame().iloc[[0]]], ignore_index=True)
     with pytest.raises(ValueError, match="duplicate FRED vintage keys"):
         audit_fred_point_in_time(data)
+
+
+def test_fred_audit_rejects_overlapping_vintage_intervals():
+    data = vintage_frame()
+    data.loc[1, "realtime_start"] = "2024-01-20"
+    with pytest.raises(ValueError, match="overlapping FRED vintage intervals"):
+        audit_fred_point_in_time(data)
