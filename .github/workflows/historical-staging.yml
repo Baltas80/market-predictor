@@ -5,6 +5,10 @@ on:
     paths:
       - "src/market_predictor/historical_adapters.py"
       - "src/market_predictor/data_sources.py"
+      - "src/market_predictor/fred_pit.py"
+      - "src/market_predictor/research_schema.py"
+      - "src/market_predictor/historical_staging.py"
+      - "src/market_predictor/historical_gate.py"
       - ".github/workflows/historical-staging.yml"
   workflow_dispatch:
     inputs:
