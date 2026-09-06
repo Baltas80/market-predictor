@@ -193,12 +193,11 @@ def fetch_fred(api_key: str, start: str, end: str) -> pd.DataFrame:
 
 
 def fetch_gdelt(start: str, end: str) -> pd.DataFrame:
-    """Retrieve GDELT day-by-day with bounded retries and visible progress.
+    """Retrieve and normalize GDELT day-by-day with bounded retries.
 
-    A transient failure on one daily archive no longer forces the whole range
-    to restart from the beginning. Successful daily frames remain in memory
-    while the next day is retrieved; transient HTTP/network errors and corrupt
-    ZIP payloads are retried with exponential backoff.
+    Each successful day is normalized immediately instead of retaining all raw
+    GDELT columns in memory until the end of the range. This materially lowers
+    peak memory use while preserving the same final cross-day deduplication.
     """
     start_date = pd.Timestamp(start).date()
     end_date = pd.Timestamp(end).date()
@@ -213,7 +212,12 @@ def fetch_gdelt(start: str, end: str) -> pd.DataFrame:
         last_error: Exception | None = None
         for attempt in range(1, GDELT_DAY_RETRIES + 1):
             try:
-                frames.append(load_gdelt_day(current))
+                raw_day = load_gdelt_day(current)
+                normalized_day = gdelt_events_to_market_events(raw_day)
+                normalized_day = normalize_event_sources(
+                    normalized_day, source_id="GDELT_2_Event_Database"
+                )
+                frames.append(normalized_day)
                 last_error = None
                 break
             except (requests.RequestException, TimeoutError, ValueError, zipfile.BadZipFile) as exc:
@@ -241,9 +245,8 @@ def fetch_gdelt(start: str, end: str) -> pd.DataFrame:
             )
         current += timedelta(days=1)
 
-    raw = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-    normalized = gdelt_events_to_market_events(raw)
-    return deduplicate_events(normalize_event_sources(normalized, source_id="GDELT_2_Event_Database"))
+    combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    return deduplicate_events(combined)
 
 
 def fetch_sec() -> pd.DataFrame:
