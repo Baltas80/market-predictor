@@ -10,6 +10,8 @@ from .event_schema import EventCategory, MarketEvent
 
 REQUIRED_COLUMNS = {"event_id", "category", "published_at", "severity"}
 OPTIONAL_COLUMNS = {
+    "event_time",
+    "available_at",
     "country",
     "entity",
     "sector",
@@ -20,12 +22,12 @@ OPTIONAL_COLUMNS = {
 
 
 def load_events_csv(path: str | Path) -> list[MarketEvent]:
-    """Load events from CSV without altering publication timestamps.
+    """Load events from CSV while preserving occurrence/publication/availability times.
 
     Required columns are ``event_id``, ``category``, ``published_at`` and
-    ``severity``. Optional metadata is preserved in ``MarketEvent``. Rows are
-    sorted chronologically only after parsing, and duplicate event IDs are
-    rejected so accidental source duplication cannot silently inflate signal.
+    ``severity``. If ``event_time`` and/or ``available_at`` are present they
+    are passed through unchanged so downstream feature generation can enforce
+    the information cutoff. Duplicate event IDs are rejected.
     """
     frame = pd.read_csv(path)
     missing = REQUIRED_COLUMNS - set(frame.columns)
@@ -47,6 +49,8 @@ def load_events_csv(path: str | Path) -> list[MarketEvent]:
                 category=category,
                 published_at=published_at,
                 severity=float(row["severity"]),
+                event_time=_optional_timestamp(row.get("event_time")),
+                available_at=_optional_timestamp(row.get("available_at")),
                 country=_optional_text(row.get("country")),
                 entity=_optional_text(row.get("entity")),
                 sector=_optional_text(row.get("sector")),
@@ -59,6 +63,15 @@ def load_events_csv(path: str | Path) -> list[MarketEvent]:
         events.append(event)
 
     return sorted(events, key=lambda event: pd.Timestamp(event.published_at))
+
+
+def _optional_timestamp(value: object) -> pd.Timestamp | None:
+    if value is None or pd.isna(value):
+        return None
+    timestamp = pd.Timestamp(value)
+    if pd.isna(timestamp):
+        return None
+    return timestamp
 
 
 def _optional_text(value: object) -> str | None:
