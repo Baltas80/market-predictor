@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - "src/market_predictor/historical_adapters.py"
+      - ".github/workflows/historical-staging.yml"
   workflow_dispatch:
     inputs:
       include_gdelt:
