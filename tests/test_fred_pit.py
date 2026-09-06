@@ -39,14 +39,21 @@ def test_fred_revision_becomes_eligible_only_after_its_vintage_date():
     assert eligible["value"].tolist() == [100.0, 101.0]
 
 
-def test_fred_audit_rejects_duplicate_vintage_key():
-    data = pd.concat([vintage_frame(), vintage_frame().iloc[[0]]], ignore_index=True)
-    with pytest.raises(ValueError, match="duplicate FRED vintage keys"):
+def test_fred_audit_accepts_realtime_start_before_observation_date():
+    data = vintage_frame()
+    data.loc[0, "realtime_start"] = "2023-12-31"
+    audited = audit_fred_point_in_time(data)
+    assert audited.loc[0, "realtime_start"] == pd.Timestamp("2023-12-31", tz="UTC")
+
+
+def test_fred_audit_rejects_realtime_end_before_start():
+    data = vintage_frame()
+    data.loc[0, "realtime_end"] = "2023-12-30"
+    with pytest.raises(ValueError, match="realtime_end cannot precede realtime_start"):
         audit_fred_point_in_time(data)
 
 
-def test_fred_audit_rejects_vintage_before_observation_date():
-    data = vintage_frame()
-    data.loc[0, "realtime_start"] = "2023-12-31"
-    with pytest.raises(ValueError, match="before its observation date"):
+def test_fred_audit_rejects_duplicate_vintage_key():
+    data = pd.concat([vintage_frame(), vintage_frame().iloc[[0]]], ignore_index=True)
+    with pytest.raises(ValueError, match="duplicate FRED vintage keys"):
         audit_fred_point_in_time(data)
