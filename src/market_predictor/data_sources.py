@@ -154,6 +154,9 @@ def load_fred_observations(
     columns (for example ``CPIAUCSL_20200101``), so it cannot be represented
     by the point-in-time audit schema. Output type 1 preserves the per-row
     ``realtime_start``/``realtime_end`` fields needed by the PIT pipeline.
+    Empty observations are represented by FRED as non-numeric values such as
+    ``.`` and are removed before the PIT audit because they are not actual
+    observations.
     """
     params = {
         "series_id": series_id,
@@ -177,6 +180,7 @@ def load_fred_observations(
     for column in ("date", "realtime_start", "realtime_end"):
         frame[column] = pd.to_datetime(frame[column], errors="coerce", utc=True)
     frame["value"] = pd.to_numeric(frame["value"], errors="coerce")
+    frame = frame.loc[frame["value"].notna()].copy()
     audit_fred_point_in_time(frame[required])
     return frame.dropna(subset=["date", "value"]).sort_values(["date", "realtime_start"])
 
