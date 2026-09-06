@@ -7,6 +7,7 @@ information-availability timestamps.
 from __future__ import annotations
 
 import pandas as pd
+import requests
 
 from .data_sources import (
     load_fred_observations,
@@ -27,13 +28,7 @@ def fetch_market(start: str, end: str) -> pd.DataFrame:
 
 
 def _fred_vintage_windows(start: str, end: str) -> list[tuple[str, str]]:
-    """Split a long real-time period into bounded FRED vintage windows.
-
-    FRED output_type=2 returns observations by vintage date and imposes result
-    limits. Keeping each request to at most one calendar year avoids requesting
-    an oversized daily-vintage payload (notably for DFF) while preserving every
-    vintage in the requested period.
-    """
+    """Split a long real-time period into bounded FRED vintage windows."""
     first = pd.Timestamp(start).normalize()
     last = pd.Timestamp(end).normalize()
     if last < first:
@@ -47,21 +42,47 @@ def _fred_vintage_windows(start: str, end: str) -> list[tuple[str, str]]:
     return windows
 
 
-def fetch_fred(api_key: str, start: str, end: str) -> pd.DataFrame:
-    """Retrieve all required FRED vintages and normalize to the PIT schema.
+def _raise_fred_error(exc: requests.HTTPError, *, series_id: str, realtime_start: str, realtime_end: str) -> None:
+    """Replace opaque HTTP 400 errors with FRED's actual API error message."""
+    response = exc.response
+    status = response.status_code if response is not None else "unknown"
+    detail = ""
+    if response is not None:
+        try:
+            payload = response.json()
+            detail = str(payload.get("error_message") or payload.get("message") or payload.get("error") or "")
+        except ValueError:
+            detail = response.text.strip()
+    if not detail:
+        detail = str(exc)
+    raise RuntimeError(
+        f"FRED request failed: series_id={series_id}, realtime_start={realtime_start}, "
+        f"realtime_end={realtime_end}, status={status}, detail={detail[:1000]}"
+    ) from exc
 
-    Long 2000-2025 requests are split into one-year real-time windows so daily
-    series stay below FRED's output_type=2 result limits.
-    """
+
+def fetch_fred(api_key: str, start: str, end: str) -> pd.DataFrame:
+    """Retrieve all required FRED vintages and normalize to the PIT schema."""
+    if not api_key or not api_key.strip():
+        raise ValueError("FRED_API_KEY is missing or empty")
+
     frames: list[pd.DataFrame] = []
     for series_id in FRED_SERIES:
         for realtime_start, realtime_end in _fred_vintage_windows(start, end):
-            frame = load_fred_observations(
-                series_id,
-                api_key,
-                realtime_start=realtime_start,
-                realtime_end=realtime_end,
-            ).copy()
+            try:
+                frame = load_fred_observations(
+                    series_id,
+                    api_key,
+                    realtime_start=realtime_start,
+                    realtime_end=realtime_end,
+                ).copy()
+            except requests.HTTPError as exc:
+                _raise_fred_error(
+                    exc,
+                    series_id=series_id,
+                    realtime_start=realtime_start,
+                    realtime_end=realtime_end,
+                )
             if frame.empty:
                 continue
             frame["series_id"] = series_id
