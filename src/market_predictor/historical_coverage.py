@@ -38,6 +38,11 @@ MARKET_SOURCE = SourceCoverage(
 # DFF is excluded because FRED exposes the series but not the ALFRED real-time
 # history needed for a strict point-in-time dataset. FEDFUNDS provides the
 # vintage-aware federal-funds-rate history used by the staging adapter.
+#
+# The requested research period remains 2000-2025, but PIT availability is
+# discovered per series through FRED's series/vintagedates endpoint. A series
+# whose first valid vintage is later than 2000 is never backfilled with today's
+# revised value; its early period remains unavailable to PIT feature builders.
 FRED_SOURCES = tuple(
     SourceCoverage(
         "fred_vintages",
@@ -46,7 +51,7 @@ FRED_SOURCES = tuple(
         DATASET_END,
         True,
         True,
-        "FRED realtime/vintage fields required; exact release time is not assumed.",
+        "FRED PIT coverage is discovered per series from vintage dates; pre-vintage periods are intentionally absent rather than backfilled.",
     )
     for series in ("FEDFUNDS", "DGS10", "CPIAUCSL", "UNRATE", "VIXCLS")
 )
