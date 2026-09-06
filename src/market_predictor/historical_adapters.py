@@ -24,6 +24,7 @@ from .research_schema import deduplicate_events, normalize_event_sources
 # historical federal-funds-rate proxy with actual vintage support.
 FRED_SERIES = ("FEDFUNDS", "DGS10", "CPIAUCSL", "UNRATE", "VIXCLS")
 FRED_VINTAGE_DATES_URL = "https://api.stlouisfed.org/fred/series/vintagedates"
+FRED_VINTAGE_DATES_PAGE_SIZE = 10000
 FRED_VINTAGE_CHUNK_DAYS = 365
 
 
@@ -47,26 +48,34 @@ def _fred_vintage_windows(start: str, end: str) -> list[tuple[str, str]]:
     return windows
 
 
-def _fred_vintage_dates(api_key: str, series_id: str, start: str, end: str) -> pd.DatetimeIndex:
-    """Return the actual FRED/ALFRED vintage dates available for a series.
+def _fred_vintage_dates(api_key: str, series_id: str) -> pd.DatetimeIndex:
+    """Return all FRED/ALFRED vintage dates for a series, with pagination.
 
-    FRED and ALFRED do not expose every FRED series over every historical
-    real-time period. In particular, requesting a pre-vintage period for a
-    series such as DGS10 can return HTTP 400 even though the series itself has
-    observations. The vintagedates endpoint lets us discover the valid PIT
-    history before requesting observations.
+    The historical PIT anchor may predate the requested dataset start. FRED's
+    documentation defines vintage dates as dates when values were revised or
+    released, so we retrieve the complete list and let ``fetch_fred`` select
+    the vintage that was already in effect at the requested start date.
     """
-    params = {
-        "series_id": series_id,
-        "api_key": api_key,
-        "file_type": "json",
-        "realtime_start": start,
-        "realtime_end": end,
-        "limit": 10000,
-        "sort_order": "asc",
-    }
-    response = _get(FRED_VINTAGE_DATES_URL, timeout=60, params=params)
-    dates = response.json().get("vintage_dates", [])
+    offset = 0
+    dates: list[str] = []
+    while True:
+        params = {
+            "series_id": series_id,
+            "api_key": api_key,
+            "file_type": "json",
+            "limit": FRED_VINTAGE_DATES_PAGE_SIZE,
+            "offset": offset,
+            "sort_order": "asc",
+        }
+        response = _get(FRED_VINTAGE_DATES_URL, timeout=60, params=params)
+        payload = response.json()
+        batch = payload.get("vintage_dates", [])
+        dates.extend(batch)
+        total = int(payload.get("count", len(dates)))
+        if not batch or offset + len(batch) >= total:
+            break
+        offset += len(batch)
+
     if not dates:
         return pd.DatetimeIndex([], tz="UTC")
     parsed = pd.to_datetime(dates, utc=True, errors="coerce")
@@ -107,12 +116,7 @@ def fetch_fred(api_key: str, start: str, end: str) -> pd.DataFrame:
     coverage: dict[str, dict[str, str]] = {}
     for series_id in FRED_SERIES:
         try:
-            vintage_dates = _fred_vintage_dates(
-                api_key,
-                series_id,
-                requested_start.date().isoformat(),
-                requested_end.date().isoformat(),
-            )
+            vintage_dates = _fred_vintage_dates(api_key, series_id)
         except requests.HTTPError as exc:
             _raise_fred_error(
                 exc,
@@ -123,16 +127,26 @@ def fetch_fred(api_key: str, start: str, end: str) -> pd.DataFrame:
 
         if vintage_dates.empty:
             raise RuntimeError(
-                f"FRED series {series_id} has no PIT vintage dates between "
-                f"{start} and {end}; refusing to substitute current revised values."
+                f"FRED series {series_id} has no PIT vintage dates; refusing to substitute current revised values."
             )
 
-        first_vintage = vintage_dates.min().normalize()
-        effective_start = max(requested_start, first_vintage)
+        prior_or_equal = vintage_dates[vintage_dates <= requested_start.tz_localize("UTC")]
+        future = vintage_dates[vintage_dates > requested_start.tz_localize("UTC")]
+        if prior_or_equal.size:
+            effective_start = requested_start
+        elif future.size and future.min().normalize() <= requested_end.tz_localize("UTC"):
+            effective_start = future.min().tz_localize(None).normalize()
+        else:
+            raise RuntimeError(
+                f"FRED series {series_id} has no PIT vintage available on or before "
+                f"{end}; refusing to backfill the requested range with revised current data."
+            )
+
         coverage[series_id] = {
             "requested_start": requested_start.date().isoformat(),
             "pit_start": effective_start.date().isoformat(),
-            "last_vintage_in_range": vintage_dates.max().date().isoformat(),
+            "first_vintage": vintage_dates.min().date().isoformat(),
+            "last_vintage_in_history": vintage_dates.max().date().isoformat(),
         }
 
         for realtime_start, realtime_end in _fred_vintage_windows(
