@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - "src/market_predictor/historical_adapters.py"
+      - "src/market_predictor/data_sources.py"
       - ".github/workflows/historical-staging.yml"
   workflow_dispatch:
     inputs:
