@@ -14,7 +14,7 @@ from .historical_coverage import DATASET_START, DATASET_END
 from .historical_gate import validate_historical_dataset
 
 
-STAGING_VERSION = "2026-09-05-staging-v1"
+STAGING_VERSION = "2026-09-06-staging-v2"
 
 
 def _write_frame(frame: pd.DataFrame, path: Path, *, index: bool = False) -> None:
@@ -99,13 +99,20 @@ def stage_historical(
     macro = fred_fetcher(fred_api_key, DATASET_START.isoformat(), DATASET_END.isoformat())
     if macro.empty:
         raise RuntimeError("FRED returned no required macro vintages")
+    fred_pit_coverage = macro.attrs.get("fred_pit_coverage", {})
+    for series_id, details in fred_pit_coverage.items():
+        pit_start = details.get("pit_start") if isinstance(details, dict) else None
+        if pit_start and pit_start > DATASET_START.isoformat():
+            limitations.append(
+                f"FRED {series_id} PIT history starts on {pit_start}; observations before that date are unavailable from FRED/ALFRED and were not backfilled with revised values"
+            )
     _write_frame(macro, raw_dir / "macro_fred.csv")
     macro_manifest = _coverage_manifest(
         macro,
         source_id="FRED_required_series",
         source_type="macro",
         source_uri="https://api.stlouisfed.org/fred/series/observations",
-        availability_policy="FRED realtime_start/vintage_start with conservative decision-time lag",
+        availability_policy="FRED realtime_start/vintage_start discovered from series/vintagedates; conservative decision-time lag is applied downstream",
     )
     manifests.append(macro_manifest)
     _write_frame(macro, normalized_dir / "macro.csv")
@@ -162,6 +169,7 @@ def stage_historical(
         "stages": stages,
         "historical_gate": gate,
         "limitations": limitations,
+        "fred_pit_coverage": fred_pit_coverage,
         "manifest_count": len(manifests),
         "manifest": str(output_dir / "source_manifest.json"),
         "normalized_directory": str(normalized_dir),
