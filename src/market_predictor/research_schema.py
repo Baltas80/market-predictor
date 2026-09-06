@@ -71,8 +71,10 @@ def validate_macro_frame(frame: pd.DataFrame) -> None:
         raise ValueError("macro schema contains invalid or missing values")
     if not np.isfinite(data["value"].to_numpy(dtype=float)).all():
         raise ValueError("macro values must be finite")
-    if (data["vintage_start"] < data["observation_date"].dt.normalize()).any():
-        raise ValueError("macro vintage_start cannot be before its observation date")
+    # FRED's real-time period is an information-availability interval, not an
+    # observation-date interval. A valid realtime_start may precede the date
+    # measured by the observation, so that comparison is intentionally not
+    # treated as a schema violation.
     if (data["vintage_end"] < data["vintage_start"]).any():
         raise ValueError("macro vintage_end cannot precede vintage_start")
     if data.duplicated(["series_id", "observation_date", "vintage_start"]).any():
