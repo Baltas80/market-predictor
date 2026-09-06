@@ -10,6 +10,7 @@ from market_predictor.data_sources import (
     _sec_category,
     align_fred_point_in_time,
     gdelt_events_to_market_events,
+    load_fred_observations,
     load_stooq_daily,
 )
 from market_predictor.research_schema import normalize_event_sources, validate_event_frame
@@ -78,6 +79,44 @@ def test_fred_alignment_does_not_use_same_day_vintage_by_default() -> None:
     aligned = align_fred_point_in_time(observations, market_index)
     assert pd.isna(aligned.loc["2020-01-01", "value"])
     assert aligned.loc["2020-01-04", "value"] == 2.0
+
+
+def test_fred_loader_uses_tall_realtime_response(monkeypatch) -> None:
+    captured: dict = {}
+    payload = {
+        "observations": [
+            {
+                "realtime_start": "2020-01-02",
+                "realtime_end": "2020-01-02",
+                "date": "2020-01-01",
+                "value": "1.0",
+            },
+            {
+                "realtime_start": "2020-01-03",
+                "realtime_end": "2020-01-03",
+                "date": "2020-01-01",
+                "value": "2.0",
+            },
+        ]
+    }
+
+    def fake_get(*args, **kwargs):
+        captured.update(kwargs.get("params", {}))
+        return SimpleNamespace(json=lambda: payload)
+
+    monkeypatch.setattr(data_sources, "_get", fake_get)
+    result = load_fred_observations(
+        "CPIAUCSL",
+        "test-key",
+        realtime_start="2020-01-01",
+        realtime_end="2020-01-04",
+    )
+
+    assert captured["output_type"] == 1
+    assert list(result["series_id"].unique()) == ["CPIAUCSL"]
+    assert list(result["value"]) == [1.0, 2.0]
+    assert result["realtime_start"].notna().all()
+    assert result["realtime_end"].notna().all()
 
 
 def test_sec_category_distinguishes_fraud_and_scandal() -> None:
