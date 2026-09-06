@@ -130,11 +130,13 @@ def fetch_fred(api_key: str, start: str, end: str) -> pd.DataFrame:
                 f"FRED series {series_id} has no PIT vintage dates; refusing to substitute current revised values."
             )
 
-        prior_or_equal = vintage_dates[vintage_dates <= requested_start.tz_localize("UTC")]
-        future = vintage_dates[vintage_dates > requested_start.tz_localize("UTC")]
+        requested_start_utc = requested_start.tz_localize("UTC")
+        requested_end_utc = requested_end.tz_localize("UTC")
+        prior_or_equal = vintage_dates[vintage_dates <= requested_start_utc]
+        future = vintage_dates[vintage_dates > requested_start_utc]
         if prior_or_equal.size:
             effective_start = requested_start
-        elif future.size and future.min().normalize() <= requested_end.tz_localize("UTC"):
+        elif future.size and future.min().normalize() <= requested_end_utc:
             effective_start = future.min().tz_localize(None).normalize()
         else:
             raise RuntimeError(
