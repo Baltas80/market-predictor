@@ -17,11 +17,12 @@ def _parse_fred_timestamp(series: pd.Series) -> pd.Series:
 def audit_fred_point_in_time(observations: pd.DataFrame) -> pd.DataFrame:
     """Return one audit row per FRED observation/vintage.
 
-    FRED's realtime fields provide vintage dates, not a guaranteed intraday
-    release timestamp. The audit therefore treats ``realtime_start`` as the
-    earliest defensible date-level availability marker and never invents a
-    release clock time. FRED's ``9999-12-31`` open-ended sentinel is mapped to
-    pandas' maximum representable UTC timestamp.
+    FRED real-time periods describe when a particular revision is the latest
+    information available; they are not required to start on or after the
+    observation date. In particular, the real-time start may precede the date
+    being measured. The PIT audit therefore validates the temporal consistency
+    of the real-time interval itself, but does not impose the invalid invariant
+    ``realtime_start >= observation_date``.
     """
     required = {"series_id", "date", "value", "realtime_start", "realtime_end"}
     missing = required - set(observations.columns)
@@ -36,8 +37,6 @@ def audit_fred_point_in_time(observations: pd.DataFrame) -> pd.DataFrame:
         raise ValueError("FRED PIT audit found invalid timestamps or values")
     if (data["realtime_end"] < data["realtime_start"]).any():
         raise ValueError("FRED realtime_end cannot precede realtime_start")
-    if (data["realtime_start"].dt.normalize() < data["date"].dt.normalize()).any():
-        raise ValueError("FRED vintage cannot become available before its observation date")
     duplicate_key = ["series_id", "date", "realtime_start"]
     if data.duplicated(duplicate_key).any():
         raise ValueError("duplicate FRED vintage keys")
