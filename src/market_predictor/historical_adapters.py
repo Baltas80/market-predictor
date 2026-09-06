@@ -10,6 +10,7 @@ import pandas as pd
 import requests
 
 from .data_sources import (
+    _get,
     load_fred_observations,
     load_gdelt_range,
     load_sec_litigation_releases_rss,
@@ -22,6 +23,7 @@ from .research_schema import deduplicate_events, normalize_event_sources
 # required by this point-in-time pipeline. FEDFUNDS is retained as the
 # historical federal-funds-rate proxy with actual vintage support.
 FRED_SERIES = ("FEDFUNDS", "DGS10", "CPIAUCSL", "UNRATE", "VIXCLS")
+FRED_VINTAGE_DATES_URL = "https://api.stlouisfed.org/fred/series/vintagedates"
 FRED_VINTAGE_CHUNK_DAYS = 365
 
 
@@ -39,10 +41,37 @@ def _fred_vintage_windows(start: str, end: str) -> list[tuple[str, str]]:
     windows: list[tuple[str, str]] = []
     current = first
     while current <= last:
-        window_end = min(current + pd.Timedelta(days=FRED_VINTAGE_CHUNK_DAYS - 1), last)
+        window_end = min(current + pd.Timedelta(FRED_VINTAGE_CHUNK_DAYS - 1, unit="D"), last)
         windows.append((current.date().isoformat(), window_end.date().isoformat()))
-        current = window_end + pd.Timedelta(days=1)
+        current = window_end + pd.Timedelta(1, unit="D")
     return windows
+
+
+def _fred_vintage_dates(api_key: str, series_id: str, start: str, end: str) -> pd.DatetimeIndex:
+    """Return the actual FRED/ALFRED vintage dates available for a series.
+
+    FRED and ALFRED do not expose every FRED series over every historical
+    real-time period. In particular, requesting a pre-vintage period for a
+    series such as DGS10 can return HTTP 400 even though the series itself has
+    observations. The vintagedates endpoint lets us discover the valid PIT
+    history before requesting observations.
+    """
+    params = {
+        "series_id": series_id,
+        "api_key": api_key,
+        "file_type": "json",
+        "realtime_start": start,
+        "realtime_end": end,
+        "limit": 10000,
+        "sort_order": "asc",
+    }
+    response = _get(FRED_VINTAGE_DATES_URL, timeout=60, params=params)
+    dates = response.json().get("vintage_dates", [])
+    if not dates:
+        return pd.DatetimeIndex([], tz="UTC")
+    parsed = pd.to_datetime(dates, utc=True, errors="coerce")
+    parsed = pd.DatetimeIndex(parsed).dropna().sort_values().unique()
+    return pd.DatetimeIndex(parsed)
 
 
 def _raise_fred_error(exc: requests.HTTPError, *, series_id: str, realtime_start: str, realtime_end: str) -> None:
@@ -65,13 +94,50 @@ def _raise_fred_error(exc: requests.HTTPError, *, series_id: str, realtime_start
 
 
 def fetch_fred(api_key: str, start: str, end: str) -> pd.DataFrame:
-    """Retrieve all required FRED vintages and normalize to the PIT schema."""
+    """Retrieve all required FRED vintages using series-specific PIT availability."""
     if not api_key or not api_key.strip():
         raise ValueError("FRED_API_KEY is missing or empty")
 
+    requested_start = pd.Timestamp(start).normalize()
+    requested_end = pd.Timestamp(end).normalize()
+    if requested_end < requested_start:
+        raise ValueError("FRED end must be on or after start")
+
     frames: list[pd.DataFrame] = []
+    coverage: dict[str, dict[str, str]] = {}
     for series_id in FRED_SERIES:
-        for realtime_start, realtime_end in _fred_vintage_windows(start, end):
+        try:
+            vintage_dates = _fred_vintage_dates(
+                api_key,
+                series_id,
+                requested_start.date().isoformat(),
+                requested_end.date().isoformat(),
+            )
+        except requests.HTTPError as exc:
+            _raise_fred_error(
+                exc,
+                series_id=series_id,
+                realtime_start=start,
+                realtime_end=end,
+            )
+
+        if vintage_dates.empty:
+            raise RuntimeError(
+                f"FRED series {series_id} has no PIT vintage dates between "
+                f"{start} and {end}; refusing to substitute current revised values."
+            )
+
+        first_vintage = vintage_dates.min().normalize()
+        effective_start = max(requested_start, first_vintage)
+        coverage[series_id] = {
+            "requested_start": requested_start.date().isoformat(),
+            "pit_start": effective_start.date().isoformat(),
+            "last_vintage_in_range": vintage_dates.max().date().isoformat(),
+        }
+
+        for realtime_start, realtime_end in _fred_vintage_windows(
+            effective_start.date().isoformat(), requested_end.date().isoformat()
+        ):
             try:
                 frame = load_fred_observations(
                     series_id,
@@ -93,12 +159,15 @@ def fetch_fred(api_key: str, start: str, end: str) -> pd.DataFrame:
             frame["vintage_start"] = pd.to_datetime(frame["realtime_start"], utc=True).dt.normalize()
             frame["vintage_end"] = pd.to_datetime(frame["realtime_end"], utc=True).dt.normalize()
             frames.append(frame[["series_id", "observation_date", "value", "vintage_start", "vintage_end"]])
+
     if not frames:
         return pd.DataFrame(columns=["series_id", "observation_date", "value", "vintage_start", "vintage_end"])
     result = pd.concat(frames, ignore_index=True)
-    return result.drop_duplicates(["series_id", "observation_date", "vintage_start"]).sort_values(
+    result = result.drop_duplicates(["series_id", "observation_date", "vintage_start"]).sort_values(
         ["series_id", "observation_date", "vintage_start"]
     ).reset_index(drop=True)
+    result.attrs["fred_pit_coverage"] = coverage
+    return result
 
 
 def fetch_gdelt(start: str, end: str) -> pd.DataFrame:
