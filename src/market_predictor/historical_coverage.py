@@ -22,9 +22,6 @@ class SourceCoverage:
     notes: str = ""
 
 
-# Core window: long enough to contain multiple crises while ending on a
-# complete calendar year. The final lockbox itself is selected inside this
-# immutable window; it is not tuned from these dates.
 DATASET_START = date(2000, 1, 3)
 DATASET_END = date(2025, 12, 31)
 
@@ -38,16 +35,22 @@ MARKET_SOURCE = SourceCoverage(
     "Daily market bars; executable-trading interpretation remains separate from the cash index.",
 )
 
+# DFF is excluded because FRED exposes the series but not the ALFRED real-time
+# history needed for a strict point-in-time dataset. FEDFUNDS provides the
+# vintage-aware federal-funds-rate history used by the staging adapter.
 FRED_SOURCES = tuple(
-    SourceCoverage("fred_vintages", series, DATASET_START, DATASET_END, True, True, "FRED realtime/vintage fields required; exact release time is not assumed.")
-    for series in (
-        "DFF", "FEDFUNDS", "DGS10", "CPIAUCSL", "UNRATE", "VIXCLS"
+    SourceCoverage(
+        "fred_vintages",
+        series,
+        DATASET_START,
+        DATASET_END,
+        True,
+        True,
+        "FRED realtime/vintage fields required; exact release time is not assumed.",
     )
+    for series in ("FEDFUNDS", "DGS10", "CPIAUCSL", "UNRATE", "VIXCLS")
 )
 
-# GDELT is deliberately split from the market/macro core. Its raw daily
-# export is large, so ingestion is event-filtered after preserving source
-# hashes and DATEADDED availability metadata.
 GDELT_SOURCE = SourceCoverage(
     "gdelt_events",
     "GDELT 2.0 Events",
