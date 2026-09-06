@@ -20,9 +20,8 @@ def audit_fred_point_in_time(observations: pd.DataFrame) -> pd.DataFrame:
     FRED real-time periods describe when a particular revision is the latest
     information available; they are not required to start on or after the
     observation date. In particular, the real-time start may precede the date
-    being measured. The PIT audit therefore validates the temporal consistency
-    of the real-time interval itself, but does not impose the invalid invariant
-    ``realtime_start >= observation_date``.
+    being measured. The PIT audit validates the interval itself and also
+    rejects overlapping revision intervals for the same series/observation.
     """
     required = {"series_id", "date", "value", "realtime_start", "realtime_end"}
     missing = required - set(observations.columns)
@@ -40,7 +39,14 @@ def audit_fred_point_in_time(observations: pd.DataFrame) -> pd.DataFrame:
     duplicate_key = ["series_id", "date", "realtime_start"]
     if data.duplicated(duplicate_key).any():
         raise ValueError("duplicate FRED vintage keys")
-    return data.sort_values(["series_id", "date", "realtime_start"]).reset_index(drop=True)
+
+    ordered = data.sort_values(["series_id", "date", "realtime_start"]).copy()
+    previous_end = ordered.groupby(["series_id", "date"], sort=False)["realtime_end"].shift(1)
+    overlap = previous_end.notna() & (ordered["realtime_start"] <= previous_end)
+    if overlap.any():
+        raise ValueError("overlapping FRED vintage intervals")
+
+    return ordered.reset_index(drop=True)
 
 
 def assert_fred_point_in_time(observations: pd.DataFrame) -> None:
