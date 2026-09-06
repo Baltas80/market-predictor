@@ -13,7 +13,13 @@ def test_coverage_is_complete_year_and_required_sources_are_declared():
     assert "stooq_spx_daily" in required
     assert "fred_vintages" in required
     assert "gdelt_events" in required
-    assert len(coverage_plan()) >= 9
+
+    plan = coverage_plan()
+    assert len(plan) == 8
+    assert {source.dataset for source in plan if source.source_id == "fred_vintages"} == {
+        "FEDFUNDS", "DGS10", "CPIAUCSL", "UNRATE", "VIXCLS"
+    }
+    assert all(source.point_in_time for source in plan if source.source_id == "fred_vintages")
 
 
 def test_session_calendar_handles_weekend_holiday_and_dst_close():
