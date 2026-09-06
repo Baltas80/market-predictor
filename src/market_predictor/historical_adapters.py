@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 import time
+import zipfile
 
 import pandas as pd
 import requests
@@ -194,10 +195,10 @@ def fetch_fred(api_key: str, start: str, end: str) -> pd.DataFrame:
 def fetch_gdelt(start: str, end: str) -> pd.DataFrame:
     """Retrieve GDELT day-by-day with bounded retries and visible progress.
 
-    A failure on one daily archive no longer discards the entire range and
-    forces every previous day to be downloaded again. Successful daily frames
-    remain in memory while the next day is retrieved; transient HTTP/network
-    errors are retried with exponential backoff.
+    A transient failure on one daily archive no longer forces the whole range
+    to restart from the beginning. Successful daily frames remain in memory
+    while the next day is retrieved; transient HTTP/network errors and corrupt
+    ZIP payloads are retried with exponential backoff.
     """
     start_date = pd.Timestamp(start).date()
     end_date = pd.Timestamp(end).date()
