@@ -16,6 +16,17 @@ from market_predictor.pipeline import run_final_lockbox_event_experiments
 FRED_SERIES = ("FEDFUNDS", "DGS10", "CPIAUCSL", "UNRATE", "VIXCLS")
 
 
+def _event_sort_key(event) -> pd.Timestamp:
+    """Order events by information availability, not unknown publication time."""
+    available = pd.Timestamp(event.available_at)
+    if pd.notna(available):
+        return available
+    published = pd.Timestamp(event.published_at)
+    if pd.notna(published):
+        return published
+    return pd.Timestamp(event.event_time)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--staging", default="data/historical")
@@ -30,8 +41,10 @@ def main() -> None:
     raw_macro = pd.read_csv(staging / "raw" / "macro_fred.csv")
     fred: dict[str, Path] = {}
     for series_id in FRED_SERIES:
-        subset = raw_macro.loc[raw_macro["series_id"] == series_id,
-                               ["observation_date", "value", "vintage_start", "vintage_end"]]
+        subset = raw_macro.loc[
+            raw_macro["series_id"] == series_id,
+            ["observation_date", "value", "vintage_start", "vintage_end"],
+        ]
         if subset.empty:
             raise RuntimeError(f"Missing required FRED series in staged data: {series_id}")
         path = output / f"fred_{series_id}.csv"
@@ -46,7 +59,7 @@ def main() -> None:
         path = staging / "normalized" / name
         if path.exists() and path.stat().st_size > 0:
             events.extend(load_events_csv(path))
-    events.sort(key=lambda event: pd.Timestamp(event.published_at))
+    events.sort(key=_event_sort_key)
     if not events:
         raise RuntimeError("No staged historical events available for experiment C")
 
@@ -66,7 +79,11 @@ def main() -> None:
 
     lockbox_index = next(iter(predictions.values())).index
     benchmark = panel.loc[lockbox_index, ["close"]].copy()
-    periods = {"lockbox_full": (str(lockbox_index.min().date()), str(lockbox_index.max().date()))}
+    periods = {
+        "lockbox_early": ("2021-01-01", "2022-12-31"),
+        "lockbox_middle": ("2023-01-01", "2024-12-31"),
+        "lockbox_late": ("2025-01-01", "2025-12-31"),
+    }
     report = build_final_financial_report(
         predictions,
         benchmark=benchmark,
@@ -77,6 +94,7 @@ def main() -> None:
     write_financial_report(report, output)
     print(f"RESULT_HASH={report.result_hash}")
     print(report.matrix.to_string(index=False))
+    print(report.stability.to_string(index=False))
 
 
 if __name__ == "__main__":
