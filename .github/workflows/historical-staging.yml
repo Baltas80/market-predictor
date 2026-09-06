@@ -1,6 +1,9 @@
 name: Historical Staging
 
 on:
+  push:
+    paths:
+      - "src/market_predictor/historical_adapters.py"
   workflow_dispatch:
     inputs:
       include_gdelt:
