@@ -18,7 +18,10 @@ from .data_sources import (
 )
 from .research_schema import deduplicate_events, normalize_event_sources
 
-FRED_SERIES = ("DFF", "FEDFUNDS", "DGS10", "CPIAUCSL", "UNRATE", "VIXCLS")
+# DFF is a valid FRED series but does not expose the ALFRED real-time history
+# required by this point-in-time pipeline. FEDFUNDS is retained as the
+# historical federal-funds-rate proxy with actual vintage support.
+FRED_SERIES = ("FEDFUNDS", "DGS10", "CPIAUCSL", "UNRATE", "VIXCLS")
 FRED_VINTAGE_CHUNK_DAYS = 365
 
 
