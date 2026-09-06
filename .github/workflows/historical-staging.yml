@@ -35,7 +35,7 @@ jobs:
           if [ "${{ inputs.include_sec }}" != "true" ]; then args="$args --skip-sec"; fi
           python scripts/ingest_historical.py --output-dir data/historical $args
       - name: Upload staging artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: historical-staging-2000-2025
           path: data/historical/
