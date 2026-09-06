@@ -39,8 +39,9 @@ def _macro(api_key: str, start: str, end: str) -> pd.DataFrame:
     frame.attrs["fred_pit_coverage"] = {
         "FEDFUNDS": {
             "requested_start": start,
-            "pit_start": "2024-01-02",
-            "last_vintage_in_range": end,
+            "pit_start": start,
+            "first_vintage": start,
+            "last_vintage_in_history": end,
         }
     }
     return frame
@@ -92,7 +93,7 @@ def test_fred_vintage_windows_bound_long_requests():
     assert windows[0] == ("2000-01-03", "2001-01-01")
     assert windows[-1][1] == "2025-12-31"
     assert all(
-        pd.Timestamp(end) - pd.Timestamp(start) <= pd.Timedelta(days=364)
+        pd.Timestamp(end) - pd.Timestamp(start) <= pd.Timedelta(364, unit="D")
         for start, end in windows
     )
 
