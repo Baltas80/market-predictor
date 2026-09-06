@@ -141,8 +141,26 @@ def _is_valid_session_date(day) -> bool:
         return False
 
 
-def load_fred_observations(series_id: str, api_key: str, *, realtime_start: str | None = None, realtime_end: str | None = None) -> pd.DataFrame:
-    params = {"series_id": series_id, "api_key": api_key, "file_type": "json", "output_type": 2}
+def load_fred_observations(
+    series_id: str,
+    api_key: str,
+    *,
+    realtime_start: str | None = None,
+    realtime_end: str | None = None,
+) -> pd.DataFrame:
+    """Load FRED observations in tall real-time-period format.
+
+    FRED ``output_type=2`` is a wide vintage matrix with dynamically named
+    columns (for example ``CPIAUCSL_20200101``), so it cannot be represented
+    by the point-in-time audit schema. Output type 1 preserves the per-row
+    ``realtime_start``/``realtime_end`` fields needed by the PIT pipeline.
+    """
+    params = {
+        "series_id": series_id,
+        "api_key": api_key,
+        "file_type": "json",
+        "output_type": 1,
+    }
     if realtime_start:
         params["realtime_start"] = realtime_start
     if realtime_end:
@@ -150,11 +168,16 @@ def load_fred_observations(series_id: str, api_key: str, *, realtime_start: str 
     response = _get(FRED_OBSERVATIONS_URL, timeout=60, params=params)
     frame = pd.DataFrame(response.json().get("observations", []))
     if frame.empty:
-        return pd.DataFrame(columns=["date", "value", "realtime_start", "realtime_end"])
+        return pd.DataFrame(columns=["series_id", "date", "value", "realtime_start", "realtime_end"])
+    frame["series_id"] = series_id
+    required = ["series_id", "date", "value", "realtime_start", "realtime_end"]
+    missing = set(required) - set(frame.columns)
+    if missing:
+        raise ValueError(f"FRED observations missing columns: {sorted(missing)}")
     for column in ("date", "realtime_start", "realtime_end"):
         frame[column] = pd.to_datetime(frame[column], errors="coerce", utc=True)
     frame["value"] = pd.to_numeric(frame["value"], errors="coerce")
-    audit_fred_point_in_time(frame[["series_id", "date", "value", "realtime_start", "realtime_end"]])
+    audit_fred_point_in_time(frame[required])
     return frame.dropna(subset=["date", "value"]).sort_values(["date", "realtime_start"])
 
 
