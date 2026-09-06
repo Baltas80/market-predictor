@@ -6,13 +6,16 @@ information-availability timestamps.
 """
 from __future__ import annotations
 
+from datetime import timedelta
+import time
+
 import pandas as pd
 import requests
 
 from .data_sources import (
     _get,
     load_fred_observations,
-    load_gdelt_range,
+    load_gdelt_day,
     load_sec_litigation_releases_rss,
     load_stooq_daily,
     gdelt_events_to_market_events,
@@ -26,6 +29,8 @@ FRED_SERIES = ("FEDFUNDS", "DGS10", "CPIAUCSL", "UNRATE", "VIXCLS")
 FRED_VINTAGE_DATES_URL = "https://api.stlouisfed.org/fred/series/vintagedates"
 FRED_VINTAGE_DATES_PAGE_SIZE = 10000
 FRED_VINTAGE_CHUNK_DAYS = 365
+GDELT_DAY_RETRIES = 4
+GDELT_RETRY_BASE_SECONDS = 2
 
 
 def fetch_market(start: str, end: str) -> pd.DataFrame:
@@ -187,8 +192,55 @@ def fetch_fred(api_key: str, start: str, end: str) -> pd.DataFrame:
 
 
 def fetch_gdelt(start: str, end: str) -> pd.DataFrame:
-    """Retrieve the GDELT event range and preserve DATEADDED as availability proxy."""
-    raw = load_gdelt_range(start, end)
+    """Retrieve GDELT day-by-day with bounded retries and visible progress.
+
+    A failure on one daily archive no longer discards the entire range and
+    forces every previous day to be downloaded again. Successful daily frames
+    remain in memory while the next day is retrieved; transient HTTP/network
+    errors are retried with exponential backoff.
+    """
+    start_date = pd.Timestamp(start).date()
+    end_date = pd.Timestamp(end).date()
+    if end_date < start_date:
+        raise ValueError("GDELT end must be on or after start")
+
+    frames: list[pd.DataFrame] = []
+    total_days = (end_date - start_date).days + 1
+    current = start_date
+    completed = 0
+    while current <= end_date:
+        last_error: Exception | None = None
+        for attempt in range(1, GDELT_DAY_RETRIES + 1):
+            try:
+                frames.append(load_gdelt_day(current))
+                last_error = None
+                break
+            except (requests.RequestException, TimeoutError, ValueError, zipfile.BadZipFile) as exc:
+                last_error = exc
+                if attempt >= GDELT_DAY_RETRIES:
+                    break
+                delay = GDELT_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
+                print(
+                    f"GDELT retry {attempt}/{GDELT_DAY_RETRIES - 1} for {current.isoformat()} "
+                    f"after {type(exc).__name__}; waiting {delay}s",
+                    flush=True,
+                )
+                time.sleep(delay)
+        if last_error is not None:
+            raise RuntimeError(
+                f"GDELT download failed permanently for {current.isoformat()} "
+                f"after {GDELT_DAY_RETRIES} attempts: {last_error}"
+            ) from last_error
+        completed += 1
+        if completed == 1 or completed % 25 == 0 or completed == total_days:
+            print(
+                f"GDELT staging progress: {completed}/{total_days} days "
+                f"({completed / total_days:.1%})",
+                flush=True,
+            )
+        current += timedelta(days=1)
+
+    raw = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     normalized = gdelt_events_to_market_events(raw)
     return deduplicate_events(normalize_event_sources(normalized, source_id="GDELT_2_Event_Database"))
 
