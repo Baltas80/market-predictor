@@ -43,12 +43,12 @@ def test_historical_gate_accepts_multiple_fred_vintages():
     assert result["macro_rows"] == 2
 
 
-def test_historical_gate_rejects_fred_vintage_before_observation_date():
+def test_historical_gate_rejects_invalid_fred_vintage_interval():
     market = market_frame()
     macro = fred_macro_frame()
-    macro.loc[0, "vintage_start"] = "2023-12-31"
+    macro.loc[0, "vintage_end"] = "2024-01-01"
     manifest = build_source_manifest(market, source_id="test-market", source_type="market", source_uri="test://market")
-    with pytest.raises(ValueError, match="before its observation date"):
+    with pytest.raises(ValueError, match="vintage_end cannot precede vintage_start"):
         validate_historical_dataset(market, macro=macro, manifests=[manifest])
 
 
