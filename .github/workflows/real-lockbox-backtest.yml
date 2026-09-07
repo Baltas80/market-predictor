@@ -27,13 +27,13 @@ env:
 jobs:
   stage-base:
     name: STAGE MARKET + FRED
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v5
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -59,7 +59,7 @@ jobs:
 
   prepare-gdelt-matrix:
     name: PREPARE 100-DAY GDELT CHUNKS
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
@@ -85,7 +85,7 @@ jobs:
   gdelt-chunks:
     name: GDELT ${{ matrix.start }} → ${{ matrix.end }}
     needs: prepare-gdelt-matrix
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -93,9 +93,9 @@ jobs:
       matrix: ${{ fromJSON(needs.prepare-gdelt-matrix.outputs.matrix) }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v5
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -118,13 +118,13 @@ jobs:
   finalize-staging:
     name: ASSEMBLE + HISTORICAL GATE
     needs: [stage-base, gdelt-chunks]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v5
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -154,13 +154,13 @@ jobs:
   real-lockbox:
     name: REAL DATA → PIT → A/B/C → LOCKBOX → FINANCIAL REPORT
     needs: finalize-staging
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v5
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
