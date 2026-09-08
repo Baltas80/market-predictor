@@ -12,7 +12,7 @@ from market_predictor.historical_ingestion import build_source_manifest, write_s
 from market_predictor.historical_gate import validate_historical_dataset
 from market_predictor.research_schema import deduplicate_events
 
-STAGING_VERSION = "2026-09-07-staging-chunked-gdelt-v1"
+STAGING_VERSION = "2026-09-08-staging-chunked-gdelt-with-gap-manifest-v2"
 
 
 def read_csv(path: Path) -> pd.DataFrame:
@@ -37,12 +37,21 @@ def main() -> int:
     macro = pd.read_csv(raw / "macro_fred.csv")
 
     chunk_paths = sorted(chunks_dir.glob("gdelt_*.csv"))
-    if not chunk_paths:
-        raise RuntimeError("No persisted GDELT chunks found")
-    frames = [pd.read_csv(path) for path in chunk_paths]
+    data_chunk_paths = [p for p in chunk_paths if not p.stem.endswith("_missing")]
+    if not data_chunk_paths:
+        raise RuntimeError("No persisted GDELT data chunks found")
+    frames = [pd.read_csv(path) for path in data_chunk_paths]
     gdelt = deduplicate_events(pd.concat(frames, ignore_index=True))
     gdelt.to_csv(raw / "events_gdelt.csv", index=False, lineterminator="\n")
     gdelt.to_csv(normalized / "events_gdelt.csv", index=False, lineterminator="\n")
+
+    missing_paths = sorted(chunks_dir.glob("gdelt_*_missing.csv"))
+    missing_frames = [pd.read_csv(path) for path in missing_paths if path.stat().st_size > 0]
+    missing = pd.concat(missing_frames, ignore_index=True) if missing_frames else pd.DataFrame()
+    if not missing.empty:
+        missing = missing.drop_duplicates(subset=["date", "source_id"], keep="last").sort_values(["date", "source_id"])
+    missing_path = raw / "events_gdelt_missing.csv"
+    missing.to_csv(missing_path, index=False, lineterminator="\n")
 
     manifests = []
     for source_id, source_type, path, uri, policy in (
@@ -72,14 +81,18 @@ def main() -> int:
         "GDELT historical event coverage begins in 2015; it is not a 2000-2014 event source",
         "SEC adapter is an RSS snapshot and does not provide a verified 2000-2025 archive",
     ]
+    if not missing.empty:
+        limitations.append(f"GDELT has {len(missing)} source-days currently missing; they are recorded for later recovery and are never imputed")
     result = {
         "status": "admissible_with_source_limits",
         "staging_version": STAGING_VERSION,
         "dataset_start": DATASET_START.isoformat(),
         "dataset_end": DATASET_END.isoformat(),
         "historical_gate": gate,
-        "gdelt_chunk_count": len(chunk_paths),
+        "gdelt_chunk_count": len(data_chunk_paths),
         "gdelt_rows": len(gdelt),
+        "gdelt_missing_day_count": len(missing),
+        "gdelt_missing_manifest": str(missing_path),
         "limitations": limitations,
         "manifest_count": len(manifests),
         "manifest": str(staging / "source_manifest.json"),
