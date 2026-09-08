@@ -1,16 +1,9 @@
 name: Real Historical Lockbox Backtest
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "scripts/run_real_lockbox.py"
-      - "scripts/ingest_historical.py"
-      - "scripts/ingest_gdelt_chunk.py"
-      - "scripts/finalize_historical_staging.py"
-      - ".github/workflows/real-lockbox-backtest.yml"
-      - "src/market_predictor/**"
-      - "pyproject.toml"
+  # The real-data backtest is intentionally manual: it is an expensive,
+  # multi-job workflow and must never consume Actions minutes accidentally on
+  # ordinary code pushes. Start it explicitly once the Actions quota is available.
   workflow_dispatch:
 
 permissions:
