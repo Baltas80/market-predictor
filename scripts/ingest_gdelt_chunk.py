@@ -1,9 +1,9 @@
-"""Download and persist one bounded GDELT historical chunk.
+"""Download one bounded GDELT historical chunk without blocking on missing days.
 
-Each chunk is independently reproducible so a failed/cancelled CI job never
-requires re-downloading earlier completed chunks. Events without a usable
-GDELT DATEADDED timestamp are excluded because their information-availability
-cutoff cannot be established safely for point-in-time research.
+A source-day that is genuinely unavailable is recorded in a deterministic
+manifest and the chunk continues. Missing days are never imputed here; a
+later recovery pass may retry them. This keeps ingestion resilient while
+preserving point-in-time integrity.
 """
 from __future__ import annotations
 
@@ -23,13 +23,14 @@ GDELT_DAY_RETRIES = 4
 GDELT_RETRY_BASE_SECONDS = 2
 
 
-def fetch_gdelt_chunk(start: str, end: str) -> pd.DataFrame:
+def fetch_gdelt_chunk(start: str, end: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     start_date = pd.Timestamp(start).date()
     end_date = pd.Timestamp(end).date()
     if end_date < start_date:
         raise ValueError("GDELT end must be on or after start")
 
     frames: list[pd.DataFrame] = []
+    missing: list[dict[str, str]] = []
     total_days = (end_date - start_date).days + 1
     current = start_date
     completed = 0
@@ -65,10 +66,20 @@ def fetch_gdelt_chunk(start: str, end: str) -> pd.DataFrame:
                 time.sleep(delay)
 
         if last_error is not None:
-            raise RuntimeError(
-                f"GDELT download failed permanently for {current.isoformat()} "
-                f"after {GDELT_DAY_RETRIES} attempts: {last_error}"
-            ) from last_error
+            missing.append(
+                {
+                    "date": current.isoformat(),
+                    "source_id": "GDELT_2_Event_Database",
+                    "status": "missing",
+                    "error_type": type(last_error).__name__,
+                    "error": str(last_error),
+                }
+            )
+            print(
+                f"GDELT gap recorded for {current.isoformat()} after "
+                f"{GDELT_DAY_RETRIES} attempts; continuing chunk",
+                flush=True,
+            )
 
         completed += 1
         if completed == 1 or completed % 25 == 0 or completed == total_days:
@@ -87,7 +98,7 @@ def fetch_gdelt_chunk(start: str, end: str) -> pd.DataFrame:
             "event/availability/severity field",
             flush=True,
         )
-    return result
+    return result, pd.DataFrame(missing)
 
 
 def main() -> int:
@@ -95,14 +106,18 @@ def main() -> int:
     parser.add_argument("--start", required=True)
     parser.add_argument("--end", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--missing-output", default=None)
     args = parser.parse_args()
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    frame = fetch_gdelt_chunk(args.start, args.end)
+    missing_output = Path(args.missing_output) if args.missing_output else output.with_name(output.stem + "_missing.csv")
+    frame, missing = fetch_gdelt_chunk(args.start, args.end)
     frame.to_csv(output, index=False, lineterminator="\n", date_format="%Y-%m-%dT%H:%M:%S%z")
+    missing.to_csv(missing_output, index=False, lineterminator="\n")
     print(
-        f"GDELT chunk saved: {args.start} -> {args.end}; rows={len(frame)}; path={output}",
+        f"GDELT chunk saved: {args.start} -> {args.end}; rows={len(frame)}; "
+        f"missing_days={len(missing)}; path={output}; missing_manifest={missing_output}",
         flush=True,
     )
     return 0
