@@ -3,18 +3,18 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 
 import pandas as pd
 
-from market_predictor.abc_protocol import PROTOCOL_VERSION
 from market_predictor.data_sources import align_fred_point_in_time
 from market_predictor.dataset import load_market, materialize_macro
 from market_predictor.event_io import load_events_csv
 from market_predictor.final_financial_report import build_final_financial_report, write_financial_report
 from market_predictor.lockbox_manifest import LockboxManifest
-from market_predictor.pipeline import run_final_lockbox_event_experiments
+from market_predictor.pipeline import PROTOCOL_VERSION, run_final_lockbox_event_experiments
 from market_predictor.reproducibility import canonical_json_hash
 
 
@@ -57,7 +57,8 @@ def _staging_fingerprint(staging: Path) -> str:
 
 def _prediction_hash(frame: pd.DataFrame) -> str:
     """Hash the complete OOS prediction frame deterministically."""
-    return canonical_json_hash(frame.reset_index().astype(object).where(pd.notna(frame), None).to_dict(orient="records"))
+    records = frame.reset_index().astype(object).where(pd.notna(frame), None).to_dict(orient="records")
+    return canonical_json_hash(records)
 
 
 def main() -> None:
@@ -142,10 +143,7 @@ def main() -> None:
         result_hashes=tuple(prediction_hashes + [("financial_report", report.result_hash)]),
     )
     manifest_path = output / "lockbox_manifest.json"
-    manifest_path.write_text(
-        __import__("json").dumps(manifest.as_dict(), sort_keys=True, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    manifest_path.write_text(json.dumps(manifest.as_dict(), sort_keys=True, indent=2) + "\n", encoding="utf-8")
     print(f"RESULT_HASH={report.result_hash}")
     print(f"LOCKBOX_MANIFEST_HASH={manifest.fingerprint()}")
     print(report.matrix.to_string(index=False))
