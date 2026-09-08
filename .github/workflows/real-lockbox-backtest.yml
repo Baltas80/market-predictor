@@ -99,8 +99,9 @@ jobs:
           python scripts/ingest_gdelt_chunk.py \
             --start "${{ matrix.start }}" \
             --end "${{ matrix.end }}" \
-            --output "data/gdelt_chunks/gdelt_${{ matrix.chunk }}_${{ matrix.start }}_${{ matrix.end }}.csv"
-      - name: Upload completed GDELT chunk
+            --output "data/gdelt_chunks/gdelt_${{ matrix.chunk }}_${{ matrix.start }}_${{ matrix.end }}.csv" \
+            --missing-output "data/gdelt_chunks/gdelt_${{ matrix.chunk }}_missing.csv"
+      - name: Upload completed GDELT chunk and gap manifest
         uses: actions/upload-artifact@v7
         with:
           name: gdelt-${{ matrix.chunk }}-${{ matrix.start }}-${{ matrix.end }}
