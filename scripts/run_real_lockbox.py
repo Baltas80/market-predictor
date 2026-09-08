@@ -2,15 +2,20 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import os
 from pathlib import Path
 
 import pandas as pd
 
+from market_predictor.abc_protocol import PROTOCOL_VERSION
 from market_predictor.data_sources import align_fred_point_in_time
 from market_predictor.dataset import load_market, materialize_macro
 from market_predictor.event_io import load_events_csv
 from market_predictor.final_financial_report import build_final_financial_report, write_financial_report
+from market_predictor.lockbox_manifest import LockboxManifest
 from market_predictor.pipeline import run_final_lockbox_event_experiments
+from market_predictor.reproducibility import canonical_json_hash
 
 
 FRED_SERIES = ("FEDFUNDS", "DGS10", "CPIAUCSL", "UNRATE", "VIXCLS")
@@ -27,6 +32,34 @@ def _event_sort_key(event) -> pd.Timestamp:
     return pd.Timestamp(event.event_time)
 
 
+def _staging_fingerprint(staging: Path) -> str:
+    """Hash every normalized input file used by the final lockbox."""
+    paths = [
+        staging / "normalized" / "market.csv",
+        staging / "raw" / "macro_fred.csv",
+        staging / "normalized" / "events_gdelt.csv",
+        staging / "normalized" / "events_sec_litigation.csv",
+    ]
+    digest = hashlib.sha256()
+    found = False
+    for path in sorted(paths, key=lambda item: str(item)):
+        if not path.exists() or path.stat().st_size == 0:
+            continue
+        found = True
+        digest.update(str(path.relative_to(staging)).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    if not found:
+        raise RuntimeError("No normalized staging inputs available for dataset fingerprint")
+    return digest.hexdigest()
+
+
+def _prediction_hash(frame: pd.DataFrame) -> str:
+    """Hash the complete OOS prediction frame deterministically."""
+    return canonical_json_hash(frame.reset_index().astype(object).where(pd.notna(frame), None).to_dict(orient="records"))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--staging", default="data/historical")
@@ -36,6 +69,8 @@ def main() -> None:
     staging = Path(args.staging)
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
+
+    dataset_hash = _staging_fingerprint(staging)
 
     market = load_market(staging / "normalized" / "market.csv")
     raw_macro = pd.read_csv(staging / "raw" / "macro_fred.csv")
@@ -72,9 +107,11 @@ def main() -> None:
     )
 
     predictions: dict[str, pd.DataFrame] = {}
+    prediction_hashes: list[tuple[str, str]] = []
     for result in results:
         frame = result.predictions.join(panel[["close"]], how="left")
         predictions[result.name] = frame
+        prediction_hashes.append((result.name, _prediction_hash(frame)))
         frame.to_csv(output / f"predictions_{result.name}.csv")
 
     lockbox_index = next(iter(predictions.values())).index
@@ -92,7 +129,25 @@ def main() -> None:
         slippage_bps=0.0,
     )
     write_financial_report(report, output)
+
+    manifest = LockboxManifest(
+        oos_start=pd.Timestamp(lockbox_index[0]).date(),
+        oos_end=pd.Timestamp(lockbox_index[-1]).date(),
+        purge_gap=5,
+        dataset_hash=dataset_hash,
+        code_version=os.environ.get("GITHUB_SHA", "manual-local-run"),
+        protocol_version=PROTOCOL_VERSION,
+        transaction_cost_bps=5.0,
+        slippage_bps=0.0,
+        result_hashes=tuple(prediction_hashes + [("financial_report", report.result_hash)]),
+    )
+    manifest_path = output / "lockbox_manifest.json"
+    manifest_path.write_text(
+        __import__("json").dumps(manifest.as_dict(), sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
     print(f"RESULT_HASH={report.result_hash}")
+    print(f"LOCKBOX_MANIFEST_HASH={manifest.fingerprint()}")
     print(report.matrix.to_string(index=False))
     print(report.stability.to_string(index=False))
 
