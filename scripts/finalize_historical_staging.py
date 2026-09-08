@@ -12,11 +12,33 @@ from market_predictor.historical_ingestion import build_source_manifest, write_s
 from market_predictor.historical_gate import validate_historical_dataset
 from market_predictor.research_schema import deduplicate_events
 
-STAGING_VERSION = "2026-09-08-staging-chunked-gdelt-with-gap-manifest-v2"
+STAGING_VERSION = "2026-09-08-staging-chunked-gdelt-with-gap-manifest-v3"
+EVENT_COLUMNS = [
+    "event_id", "event_time", "published_at", "available_at", "source_id",
+    "category", "severity", "country", "entity", "sector", "duration_days",
+    "media_intensity", "surprise",
+]
+MISSING_COLUMNS = ["date", "source_id", "status", "error_type", "error"]
 
 
 def read_csv(path: Path) -> pd.DataFrame:
     return pd.read_csv(path)
+
+
+def read_missing_manifest(path: Path) -> pd.DataFrame:
+    """Read a chunk gap manifest, treating an empty file as no gaps."""
+    if not path.exists() or path.stat().st_size == 0:
+        return pd.DataFrame(columns=MISSING_COLUMNS)
+    try:
+        frame = pd.read_csv(path)
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame(columns=MISSING_COLUMNS)
+    if frame.empty:
+        return pd.DataFrame(columns=MISSING_COLUMNS)
+    missing = set(MISSING_COLUMNS) - set(frame.columns)
+    if missing:
+        raise ValueError(f"GDELT gap manifest missing columns: {sorted(missing)}")
+    return frame[MISSING_COLUMNS].copy()
 
 
 def main() -> int:
@@ -41,13 +63,18 @@ def main() -> int:
     if not data_chunk_paths:
         raise RuntimeError("No persisted GDELT data chunks found")
     frames = [pd.read_csv(path) for path in data_chunk_paths]
-    gdelt = deduplicate_events(pd.concat(frames, ignore_index=True))
+    nonempty_frames = [frame for frame in frames if not frame.empty]
+    if nonempty_frames:
+        gdelt = deduplicate_events(pd.concat(nonempty_frames, ignore_index=True))
+    else:
+        gdelt = pd.DataFrame(columns=EVENT_COLUMNS)
     gdelt.to_csv(raw / "events_gdelt.csv", index=False, lineterminator="\n")
     gdelt.to_csv(normalized / "events_gdelt.csv", index=False, lineterminator="\n")
 
     missing_paths = sorted(chunks_dir.glob("gdelt_*_missing.csv"))
-    missing_frames = [pd.read_csv(path) for path in missing_paths if path.stat().st_size > 0]
-    missing = pd.concat(missing_frames, ignore_index=True) if missing_frames else pd.DataFrame()
+    missing_frames = [read_missing_manifest(path) for path in missing_paths]
+    nonempty_missing = [frame for frame in missing_frames if not frame.empty]
+    missing = pd.concat(nonempty_missing, ignore_index=True) if nonempty_missing else pd.DataFrame(columns=MISSING_COLUMNS)
     if not missing.empty:
         missing = missing.drop_duplicates(subset=["date", "source_id"], keep="last").sort_values(["date", "source_id"])
     missing_path = raw / "events_gdelt_missing.csv"
