@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import timedelta
+from io import BytesIO
 from pathlib import Path
 import time
 import zipfile
@@ -16,11 +17,81 @@ import zipfile
 import pandas as pd
 import requests
 
-from market_predictor.data_sources import gdelt_events_to_market_events, load_gdelt_day
+from market_predictor.data_sources import _gdelt_category
 from market_predictor.research_schema import deduplicate_events, normalize_event_sources
 
 GDELT_DAY_RETRIES = 4
 GDELT_RETRY_BASE_SECONDS = 2
+
+# GDELT 2.0 daily event exports contain 61 fields.  The three ADM2 fields
+# were missing from the former layout; omitting them shifted DATEADDED and
+# SOURCEURL into the wrong columns and caused every event to be rejected by
+# the point-in-time filter.
+GDELT_EXPORT_COLUMNS = [
+    "global_event_id", "sql_date", "month_year", "year", "fraction_date",
+    "actor1_code", "actor1_name", "actor1_country", "actor1_known_group",
+    "actor1_ethnic", "actor1_religion1", "actor1_religion2", "actor1_type1",
+    "actor1_type2", "actor1_type3", "actor2_code", "actor2_name",
+    "actor2_country", "actor2_known_group", "actor2_ethnic", "actor2_religion1",
+    "actor2_religion2", "actor2_type1", "actor2_type2", "actor2_type3",
+    "is_root_event", "event_code", "event_base_code", "event_root_code",
+    "quad_class", "goldstein_scale", "num_mentions", "num_sources",
+    "num_articles", "avg_tone", "actor1_geo_type", "actor1_geo_fullname",
+    "actor1_geo_country", "actor1_geo_adm1", "actor1_geo_adm2",
+    "actor1_geo_lat", "actor1_geo_long", "actor1_geo_feature_id",
+    "actor2_geo_type", "actor2_geo_fullname", "actor2_geo_country",
+    "actor2_geo_adm1", "actor2_geo_adm2", "actor2_geo_lat", "actor2_geo_long",
+    "actor2_geo_feature_id", "action_geo_type", "action_geo_fullname",
+    "action_geo_country", "action_geo_adm1", "action_geo_adm2",
+    "action_geo_lat", "action_geo_long", "action_geo_feature_id",
+    "date_added", "source_url",
+]
+
+
+def load_gdelt_day(day: str | pd.Timestamp) -> pd.DataFrame:
+    """Load and normalize one GDELT 2.0 daily event export."""
+    date = pd.Timestamp(day).strftime("%Y%m%d")
+    url = f"https://data.gdeltproject.org/events/{date}.export.CSV.zip"
+    response = requests.get(
+        url,
+        timeout=120,
+        headers={"User-Agent": "market-predictor/0.1 (research ingestion)"},
+    )
+    response.raise_for_status()
+    with zipfile.ZipFile(BytesIO(response.content)) as archive:
+        members = archive.namelist()
+        if not members:
+            raise ValueError(f"Empty GDELT archive for {date}")
+        with archive.open(members[0]) as handle:
+            frame = pd.read_csv(
+                handle,
+                sep="\t",
+                header=None,
+                names=GDELT_EXPORT_COLUMNS,
+                dtype=str,
+                low_memory=False,
+            )
+
+    frame["date_added"] = pd.to_datetime(
+        frame["date_added"], format="%Y%m%d%H%M%S", utc=True, errors="coerce"
+    )
+    frame["sql_date"] = pd.to_datetime(
+        frame["sql_date"], format="%Y%m%d", errors="coerce", utc=True
+    )
+    for column in ["goldstein_scale", "num_mentions", "num_sources", "num_articles", "avg_tone"]:
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+
+    actor_text = frame[["actor1_name", "actor2_name", "action_geo_fullname"]].fillna("").agg(" ".join, axis=1)
+    frame["category"] = [
+        _gdelt_category(root, code, text)
+        for root, code, text in zip(frame["event_root_code"], frame["event_code"], actor_text)
+    ]
+    scale = frame["goldstein_scale"].abs().clip(0, 10) / 10
+    media = frame["num_sources"].fillna(0).clip(lower=0)
+    frame["severity"] = (0.7 * scale + 0.3 * (media / (media + 5)).clip(0, 1)).clip(0, 1)
+    frame["surprise"] = 0.0
+
+    return frame
 
 
 def fetch_gdelt_chunk(start: str, end: str) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -41,9 +112,8 @@ def fetch_gdelt_chunk(start: str, end: str) -> tuple[pd.DataFrame, pd.DataFrame]
         for attempt in range(1, GDELT_DAY_RETRIES + 1):
             try:
                 raw_day = load_gdelt_day(current)
-                normalized = gdelt_events_to_market_events(raw_day)
                 normalized = normalize_event_sources(
-                    normalized, source_id="GDELT_2_Event_Database"
+                    raw_day, source_id="GDELT_2_Event_Database"
                 )
                 before = len(normalized)
                 normalized = normalized.dropna(
@@ -91,7 +161,11 @@ def fetch_gdelt_chunk(start: str, end: str) -> tuple[pd.DataFrame, pd.DataFrame]
         current += timedelta(days=1)
 
     combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-    result = deduplicate_events(combined)
+    result = deduplicate_events(combined) if not combined.empty else pd.DataFrame(columns=[
+        "event_id", "event_time", "published_at", "available_at", "source_id",
+        "category", "severity", "country", "entity", "sector", "duration_days",
+        "media_intensity", "surprise",
+    ])
     if dropped_unavailable:
         print(
             f"GDELT PIT filter: excluded {dropped_unavailable} rows without a valid "
