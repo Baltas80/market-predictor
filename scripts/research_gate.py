@@ -11,6 +11,7 @@ import pandas as pd
 
 from market_predictor.abc_protocol import ABCProtocol, assert_same_abc_protocol, common_walk_forward_folds, folds_identity_hash
 from market_predictor.information_set import build_information_set
+from market_predictor.pipeline import PROTOCOL_VERSION
 from market_predictor.research_gate import ResearchGateState
 from market_predictor.reproducibility import canonical_json_hash
 from market_predictor.session_calendar import audit_market_timestamps, session_table
@@ -67,7 +68,7 @@ def main() -> None:
             purge_gap=5, horizon=5, transaction_cost_bps=5.0, slippage_bps=5.0,
             observations=len(index), prediction_index_hash=prediction_index_hash,
             dataset_hash="ci-dataset", code_version="ci-code",
-            protocol_version="2026-09-05", folds_hash=folds_hash,
+            protocol_version=PROTOCOL_VERSION, folds_hash=folds_hash,
         )
         for name in ("A", "B", "C")
     }
