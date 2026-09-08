@@ -1,0 +1,18 @@
+name: Runner Smoke
+
+on:
+  push:
+    branches:
+      - "feature/runner-smoke-fix-5"
+
+permissions: {}
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Runner identity
+        run: |
+          echo "runner=$(uname -a)"
+          echo "python=$(python3 --version)"
+          echo "runner_name=${RUNNER_NAME}"
