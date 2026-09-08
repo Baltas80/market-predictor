@@ -1,15 +1,15 @@
 name: Real Historical Lockbox Backtest
 
 on:
-  # The real-data backtest is intentionally manual: it is an expensive,
-  # multi-job workflow and must never consume Actions minutes accidentally on
-  # ordinary code pushes. Start it explicitly once the Actions quota is available.
+  # Temporary one-shot trigger: now that the repository is public, execute the
+  # real historical lockbox immediately. It is disabled again after this run.
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Never cancel a real-data run because another expensive run was dispatched.
 concurrency:
   group: real-lockbox-main
   cancel-in-progress: false
