@@ -1,8 +1,6 @@
 name: Real Historical Lockbox Backtest
 
 on:
-  # Temporary one-shot trigger: execute the real historical lockbox. It is
-  # disabled again after this run.
   push:
     branches: [main]
   workflow_dispatch:
@@ -66,12 +64,12 @@ jobs:
           retention-days: 7
 
   prepare-gdelt-matrix:
-    name: PREPARE 7-DAY GDELT CHUNKS
+    name: PREPARE 28-DAY GDELT MATRIX
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
-      - name: Build weekly chunk matrix
+      - name: Build 28-day chunk matrix
         id: matrix
         shell: bash
         run: |
@@ -83,21 +81,22 @@ jobs:
           cur = start
           chunk = 1
           while cur <= end:
-              chunk_end = min(cur + datetime.timedelta(days=6), end)
+              chunk_end = min(cur + datetime.timedelta(days=27), end)
               rows.append({"chunk": chunk, "start": cur.isoformat(), "end": chunk_end.isoformat()})
               cur = chunk_end + datetime.timedelta(days=1)
               chunk += 1
           print("matrix=" + json.dumps({"include": rows}, separators=(",", ":")))
+          print(f"chunks={len(rows)}", file=__import__('sys').stderr)
           PY
 
   gdelt-chunks:
     name: GDELT ${{ matrix.start }} → ${{ matrix.end }}
     needs: prepare-gdelt-matrix
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 45
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 32
       matrix: ${{ fromJSON(needs.prepare-gdelt-matrix.outputs.matrix) }}
     steps:
       - name: Checkout
@@ -109,7 +108,7 @@ jobs:
           cache: pip
       - name: Install package
         run: python -m pip install --upgrade pip && python -m pip install -e ".[test]"
-      - name: Download and persist 7-day GDELT chunk
+      - name: Download and persist 28-day GDELT chunk
         run: |
           python scripts/ingest_gdelt_chunk.py \
             --start "${{ matrix.start }}" \
@@ -128,7 +127,7 @@ jobs:
     name: RECOVER GDELT GAPS ONLY
     needs: gdelt-chunks
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v5
