@@ -12,7 +12,7 @@ from market_predictor.historical_ingestion import build_source_manifest, write_s
 from market_predictor.historical_gate import validate_historical_dataset
 from market_predictor.research_schema import deduplicate_events
 
-STAGING_VERSION = "2026-09-08-staging-chunked-gdelt-with-gap-manifest-v3"
+STAGING_VERSION = "2026-09-09-staging-weekly-gdelt-with-gap-manifest-v4"
 EVENT_COLUMNS = [
     "event_id", "event_time", "published_at", "available_at", "source_id",
     "category", "severity", "country", "entity", "sector", "duration_days",
