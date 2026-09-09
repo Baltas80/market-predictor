@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: real-lockbox-main
@@ -110,19 +111,41 @@ jobs:
           cache: pip
       - name: Install package
         run: python -m pip install --upgrade pip && python -m pip install -e ".[test]"
+      - name: Restore previous completed daily checkpoints
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data/gdelt_chunks
+          artifact_name="gdelt-${{ matrix.chunk }}-${{ matrix.start }}-${{ matrix.end }}"
+          echo "Looking for reusable checkpoint artifact: ${artifact_name}"
+          artifact_id="$(gh api --method GET \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=100" \
+            --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | last | .id // empty')"
+          if [[ -n "${artifact_id}" ]]; then
+            echo "Restoring artifact ${artifact_id} (${artifact_name})"
+            gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > /tmp/gdelt-checkpoint.zip
+            unzip -o /tmp/gdelt-checkpoint.zip -d data/gdelt_chunks >/dev/null
+            echo "Checkpoint restore complete"
+          else
+            echo "No previous checkpoint artifact found; starting this chunk from scratch"
+          fi
       - name: Download and persist 28-day GDELT chunk
         run: |
           python scripts/ingest_gdelt_chunk.py \
             --start "${{ matrix.start }}" \
             --end "${{ matrix.end }}" \
             --output "data/gdelt_chunks/gdelt_${{ matrix.chunk }}_${{ matrix.start }}_${{ matrix.end }}.csv" \
-            --missing-output "data/gdelt_chunks/gdelt_${{ matrix.chunk }}_missing.csv"
-      - name: Upload completed GDELT chunk and gap manifest
+            --missing-output "data/gdelt_chunks/gdelt_${{ matrix.chunk }}_missing.csv" \
+            --checkpoint-dir "data/gdelt_chunks/gdelt_${{ matrix.chunk }}_${{ matrix.start }}_${{ matrix.end }}_days"
+      - name: Upload completed GDELT chunk and daily checkpoints
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: gdelt-${{ matrix.chunk }}-${{ matrix.start }}-${{ matrix.end }}
-          path: data/gdelt_chunks/*.csv
-          if-no-files-found: error
+          path: data/gdelt_chunks/
+          if-no-files-found: ignore
           retention-days: 7
 
   recover-gdelt-gaps:
