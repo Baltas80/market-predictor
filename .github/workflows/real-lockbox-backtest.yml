@@ -75,7 +75,9 @@ jobs:
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import datetime, json
-          start = datetime.date(2015, 1, 1)
+          # GDELT 2.0 starts on 2015-02-19. Do not create impossible
+          # source-day gaps for dates before the dataset existed.
+          start = datetime.date(2015, 2, 19)
           end = datetime.date(2025, 12, 31)
           rows = []
           cur = start

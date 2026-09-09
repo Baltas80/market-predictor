@@ -23,11 +23,12 @@ from market_predictor.research_schema import deduplicate_events, normalize_event
 GDELT_DAY_RETRIES = 4
 GDELT_RETRY_BASE_SECONDS = 2
 
-# GDELT 2.0 daily event exports contain 61 fields.  The three ADM2 fields
-# were missing from the former layout; omitting them shifted DATEADDED and
-# SOURCEURL into the wrong columns and caused every event to be rejected by
-# the point-in-time filter.
-GDELT_EXPORT_COLUMNS = [
+# GDELT 2.0 has used both the original 58-field event layout and the
+# later 61-field layout with Actor1Geo_ADM2, Actor2Geo_ADM2 and
+# ActionGeo_ADM2. Historical files must be decoded according to the
+# layout actually present in each file; otherwise DATEADDED/SOURCEURL
+# become misaligned and the PIT gate rejects the entire day.
+GDELT_EXPORT_COLUMNS_61 = [
     "global_event_id", "sql_date", "month_year", "year", "fraction_date",
     "actor1_code", "actor1_name", "actor1_country", "actor1_known_group",
     "actor1_ethnic", "actor1_religion1", "actor1_religion2", "actor1_type1",
@@ -46,6 +47,10 @@ GDELT_EXPORT_COLUMNS = [
     "action_geo_lat", "action_geo_long", "action_geo_feature_id",
     "date_added", "source_url",
 ]
+GDELT_EXPORT_COLUMNS_58 = [
+    column for column in GDELT_EXPORT_COLUMNS_61
+    if column not in {"actor1_geo_adm2", "actor2_geo_adm2", "action_geo_adm2"}
+]
 
 
 def load_gdelt_day(day: str | pd.Timestamp) -> pd.DataFrame:
@@ -62,16 +67,33 @@ def load_gdelt_day(day: str | pd.Timestamp) -> pd.DataFrame:
         members = archive.namelist()
         if not members:
             raise ValueError(f"Empty GDELT archive for {date}")
-        with archive.open(members[0]) as handle:
+        member = members[0]
+        with archive.open(member) as probe:
+            first_line = probe.readline()
+        field_count = first_line.count(b"\t") + 1
+        if field_count == len(GDELT_EXPORT_COLUMNS_61):
+            columns = GDELT_EXPORT_COLUMNS_61
+        elif field_count == len(GDELT_EXPORT_COLUMNS_58):
+            columns = GDELT_EXPORT_COLUMNS_58
+        else:
+            raise ValueError(
+                f"Unsupported GDELT field count for {date}: "
+                f"{field_count} (expected 58 or 61)"
+            )
+        with archive.open(member) as handle:
             frame = pd.read_csv(
                 handle,
                 sep="\t",
                 header=None,
-                names=GDELT_EXPORT_COLUMNS,
+                names=columns,
                 dtype=str,
                 low_memory=False,
             )
 
+    for column in ("actor1_geo_adm2", "actor2_geo_adm2", "action_geo_adm2"):
+        if column not in frame:
+            frame[column] = pd.NA
+    frame = frame[GDELT_EXPORT_COLUMNS_61]
     frame["date_added"] = pd.to_datetime(
         frame["date_added"], format="%Y%m%d%H%M%S", utc=True, errors="coerce"
     )
@@ -80,7 +102,6 @@ def load_gdelt_day(day: str | pd.Timestamp) -> pd.DataFrame:
     )
     for column in ["goldstein_scale", "num_mentions", "num_sources", "num_articles", "avg_tone"]:
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
-
     actor_text = frame[["actor1_name", "actor2_name", "action_geo_fullname"]].fillna("").agg(" ".join, axis=1)
     frame["category"] = [
         _gdelt_category(root, code, text)
@@ -90,7 +111,6 @@ def load_gdelt_day(day: str | pd.Timestamp) -> pd.DataFrame:
     media = frame["num_sources"].fillna(0).clip(lower=0)
     frame["severity"] = (0.7 * scale + 0.3 * (media / (media + 5)).clip(0, 1)).clip(0, 1)
     frame["surprise"] = 0.0
-
     return frame
 
 
@@ -99,26 +119,20 @@ def fetch_gdelt_chunk(start: str, end: str) -> tuple[pd.DataFrame, pd.DataFrame]
     end_date = pd.Timestamp(end).date()
     if end_date < start_date:
         raise ValueError("GDELT end must be on or after start")
-
     frames: list[pd.DataFrame] = []
     missing: list[dict[str, str]] = []
     total_days = (end_date - start_date).days + 1
     current = start_date
     completed = 0
     dropped_unavailable = 0
-
     while current <= end_date:
         last_error: Exception | None = None
         for attempt in range(1, GDELT_DAY_RETRIES + 1):
             try:
                 raw_day = load_gdelt_day(current)
-                normalized = normalize_event_sources(
-                    raw_day, source_id="GDELT_2_Event_Database"
-                )
+                normalized = normalize_event_sources(raw_day, source_id="GDELT_2_Event_Database")
                 before = len(normalized)
-                normalized = normalized.dropna(
-                    subset=["event_id", "event_time", "available_at", "severity"]
-                ).copy()
+                normalized = normalized.dropna(subset=["event_id", "event_time", "available_at", "severity"]).copy()
                 dropped_unavailable += before - len(normalized)
                 frames.append(normalized)
                 last_error = None
@@ -130,36 +144,26 @@ def fetch_gdelt_chunk(start: str, end: str) -> tuple[pd.DataFrame, pd.DataFrame]
                 delay = GDELT_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
                 print(
                     f"GDELT retry {attempt}/{GDELT_DAY_RETRIES - 1} for {current.isoformat()} "
-                    f"after {type(exc).__name__}; waiting {delay}s",
+                    f"after {type(exc).__name__}: {exc}; waiting {delay}s",
                     flush=True,
                 )
                 time.sleep(delay)
-
         if last_error is not None:
-            missing.append(
-                {
-                    "date": current.isoformat(),
-                    "source_id": "GDELT_2_Event_Database",
-                    "status": "missing",
-                    "error_type": type(last_error).__name__,
-                    "error": str(last_error),
-                }
-            )
+            missing.append({
+                "date": current.isoformat(),
+                "source_id": "GDELT_2_Event_Database",
+                "status": "missing",
+                "error_type": type(last_error).__name__,
+                "error": str(last_error),
+            })
             print(
-                f"GDELT gap recorded for {current.isoformat()} after "
-                f"{GDELT_DAY_RETRIES} attempts; continuing chunk",
+                f"GDELT gap recorded for {current.isoformat()} after {GDELT_DAY_RETRIES} attempts; continuing chunk",
                 flush=True,
             )
-
         completed += 1
         if completed == 1 or completed % 25 == 0 or completed == total_days:
-            print(
-                f"GDELT staging progress: {completed}/{total_days} days "
-                f"({completed / total_days:.1%})",
-                flush=True,
-            )
+            print(f"GDELT staging progress: {completed}/{total_days} days ({completed / total_days:.1%})", flush=True)
         current += timedelta(days=1)
-
     combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     result = deduplicate_events(combined) if not combined.empty else pd.DataFrame(columns=[
         "event_id", "event_time", "published_at", "available_at", "source_id",
@@ -168,8 +172,7 @@ def fetch_gdelt_chunk(start: str, end: str) -> tuple[pd.DataFrame, pd.DataFrame]
     ])
     if dropped_unavailable:
         print(
-            f"GDELT PIT filter: excluded {dropped_unavailable} rows without a valid "
-            "event/availability/severity field",
+            f"GDELT PIT filter: excluded {dropped_unavailable} rows without a valid event/availability/severity field",
             flush=True,
         )
     return result, pd.DataFrame(missing)
@@ -182,7 +185,6 @@ def main() -> int:
     parser.add_argument("--output", required=True)
     parser.add_argument("--missing-output", default=None)
     args = parser.parse_args()
-
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     missing_output = Path(args.missing_output) if args.missing_output else output.with_name(output.stem + "_missing.csv")
@@ -190,8 +192,7 @@ def main() -> int:
     frame.to_csv(output, index=False, lineterminator="\n", date_format="%Y-%m-%dT%H:%M:%S%z")
     missing.to_csv(missing_output, index=False, lineterminator="\n")
     print(
-        f"GDELT chunk saved: {args.start} -> {args.end}; rows={len(frame)}; "
-        f"missing_days={len(missing)}; path={output}; missing_manifest={missing_output}",
+        f"GDELT chunk saved: {args.start} -> {args.end}; rows={len(frame)}; missing_days={len(missing)}; path={output}; missing_manifest={missing_output}",
         flush=True,
     )
     return 0
