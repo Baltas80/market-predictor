@@ -1,8 +1,8 @@
 name: Real Historical Lockbox Backtest
 
 on:
-  # Temporary one-shot trigger: now that the repository is public, execute the
-  # real historical lockbox immediately. It is disabled again after this run.
+  # Temporary one-shot trigger: execute the real historical lockbox. It is
+  # disabled again after this run.
   push:
     branches: [main]
   workflow_dispatch:
@@ -51,12 +51,12 @@ jobs:
           retention-days: 7
 
   prepare-gdelt-matrix:
-    name: PREPARE 100-DAY GDELT CHUNKS
+    name: PREPARE 7-DAY GDELT CHUNKS
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
-      - name: Build chunk matrix
+      - name: Build weekly chunk matrix
         id: matrix
         shell: bash
         run: |
@@ -68,7 +68,7 @@ jobs:
           cur = start
           chunk = 1
           while cur <= end:
-              chunk_end = min(cur + datetime.timedelta(days=99), end)
+              chunk_end = min(cur + datetime.timedelta(days=6), end)
               rows.append({"chunk": chunk, "start": cur.isoformat(), "end": chunk_end.isoformat()})
               cur = chunk_end + datetime.timedelta(days=1)
               chunk += 1
@@ -79,7 +79,7 @@ jobs:
     name: GDELT ${{ matrix.start }} → ${{ matrix.end }}
     needs: prepare-gdelt-matrix
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -94,7 +94,7 @@ jobs:
           cache: pip
       - name: Install package
         run: python -m pip install --upgrade pip && python -m pip install -e ".[test]"
-      - name: Download and persist 100-day GDELT chunk
+      - name: Download and persist 7-day GDELT chunk
         run: |
           python scripts/ingest_gdelt_chunk.py \
             --start "${{ matrix.start }}" \
