@@ -109,9 +109,46 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  recover-gdelt-gaps:
+    name: RECOVER GDELT GAPS ONLY
+    needs: gdelt-chunks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install package
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[test]"
+      - name: Download GDELT chunk artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: gdelt-*
+          path: data/gdelt_chunks
+          merge-multiple: true
+      - name: Retry only recorded missing source-days
+        run: |
+          python scripts/recover_gdelt_gaps.py \
+            --chunks data/gdelt_chunks \
+            --output data/gdelt_chunks/gdelt_recovered.csv \
+            --remaining-output data/gdelt_chunks/gdelt_recovery_missing.csv
+      - name: Upload recovery results
+        uses: actions/upload-artifact@v7
+        with:
+          name: gdelt-recovery-${{ github.sha }}
+          path: |
+            data/gdelt_chunks/gdelt_recovered.csv
+            data/gdelt_chunks/gdelt_recovery_missing.csv
+          if-no-files-found: error
+          retention-days: 7
+
   finalize-staging:
     name: ASSEMBLE + HISTORICAL GATE
-    needs: [stage-base, gdelt-chunks]
+    needs: [stage-base, recover-gdelt-gaps]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -135,6 +172,11 @@ jobs:
           pattern: gdelt-*
           path: data/gdelt_chunks
           merge-multiple: true
+      - name: Download GDELT recovery results
+        uses: actions/download-artifact@v8
+        with:
+          name: gdelt-recovery-${{ github.sha }}
+          path: data/gdelt_chunks
       - name: Assemble and validate historical staging
         run: python scripts/finalize_historical_staging.py --staging data/historical --chunks data/gdelt_chunks
       - name: Persist final historical staging
