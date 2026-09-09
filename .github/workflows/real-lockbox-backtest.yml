@@ -41,7 +41,22 @@ jobs:
       - name: Stage base historical data without GDELT or SEC RSS
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
-        run: python scripts/ingest_historical.py --output-dir data/historical --execute --skip-gdelt --skip-sec
+        run: |
+          set +e
+          for attempt in 1 2 3; do
+            echo "FRED/base staging attempt ${attempt}/3"
+            python scripts/ingest_historical.py --output-dir data/historical --execute --skip-gdelt --skip-sec
+            status=$?
+            if [ "$status" -eq 0 ]; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "Base staging failed (exit ${status}); waiting 90s for transient API/rate-limit recovery..."
+              rm -rf data/historical
+              sleep 90
+            fi
+          done
+          exit "$status"
       - name: Persist base staging
         uses: actions/upload-artifact@v7
         with:
