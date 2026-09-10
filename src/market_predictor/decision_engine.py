@@ -126,7 +126,7 @@ def decide(snapshot: PredictionSnapshot, config: DecisionConfig = DecisionConfig
 
     if snapshot.data_status != "OK":
         reasons.append(f"DATA_{snapshot.data_status}")
-    if snapshot.signal_age_seconds > config.max_signal_age_seconds:
+    if snapshot.signal_age_seconds > config.max_signal_age_seconds and "DATA_STALE" not in reasons:
         reasons.append("DATA_STALE")
     if not snapshot.model_approved:
         reasons.append("MODEL_NOT_APPROVED")
