@@ -24,11 +24,6 @@ from market_predictor.research_schema import deduplicate_events, normalize_event
 GDELT_DAY_RETRIES = 4
 GDELT_RETRY_BASE_SECONDS = 2
 
-# GDELT 2.0 has used both the original 58-field event layout and the
-# later 61-field layout with Actor1Geo_ADM2, Actor2Geo_ADM2 and
-# ActionGeo_ADM2. Historical files must be decoded according to the
-# layout actually present in each file; otherwise DATEADDED/SOURCEURL
-# become misaligned and the PIT gate rejects the entire day.
 GDELT_EXPORT_COLUMNS_61 = [
     "global_event_id", "sql_date", "month_year", "year", "fraction_date",
     "actor1_code", "actor1_name", "actor1_country", "actor1_known_group",
@@ -96,10 +91,16 @@ def load_gdelt_day(day: str | pd.Timestamp) -> pd.DataFrame:
             frame[column] = pd.NA
     frame = frame[GDELT_EXPORT_COLUMNS_61]
     frame["date_added"] = pd.to_datetime(
-        frame["date_added"], format="%Y%m%d%H%M%S", utc=True, errors="coerce"
+        frame["date_added"].astype("string").str.strip(),
+        format="%Y%m%d%H%M%S",
+        utc=True,
+        errors="coerce",
     )
     frame["sql_date"] = pd.to_datetime(
-        frame["sql_date"], format="%Y%m%d", errors="coerce", utc=True
+        frame["sql_date"].astype("string").str.strip(),
+        format="%Y%m%d",
+        errors="coerce",
+        utc=True,
     )
     for column in ["goldstein_scale", "num_mentions", "num_sources", "num_articles", "avg_tone"]:
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
@@ -179,8 +180,17 @@ def fetch_gdelt_chunk(start: str, end: str, checkpoint_dir: Path | None = None) 
                 raw_day["available_at"] = raw_day["date_added"]
                 normalized = normalize_event_sources(raw_day, source_id="GDELT_2_Event_Database")
                 before = len(normalized)
+                invalid_counts = {
+                    column: int(normalized[column].isna().sum())
+                    for column in ("event_id", "event_time", "available_at", "severity")
+                }
                 normalized = normalized.dropna(subset=["event_id", "event_time", "available_at", "severity"]).copy()
                 dropped_unavailable += before - len(normalized)
+                if before and len(normalized) == 0:
+                    raise ValueError(
+                        "GDELT PIT normalization rejected every row; "
+                        + ", ".join(f"{column}_nulls={count}" for column, count in invalid_counts.items())
+                    )
                 normalized.to_csv(
                     checkpoint,
                     index=False,
