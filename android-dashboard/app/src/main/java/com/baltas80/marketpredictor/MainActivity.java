@@ -21,11 +21,12 @@ public class MainActivity extends Activity {
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         float d;
         int bg = Color.rgb(8,12,24), card = Color.rgb(17,24,39), text = Color.rgb(238,242,255), muted = Color.rgb(148,163,184), accent = Color.rgb(99,102,241), good = Color.rgb(34,197,94), warn = Color.rgb(245,158,11);
-        DashboardView(Context c) { super(c); d = getResources().getDisplayMetrics().density; p.setTypeface(Typeface.create("sans", Typeface.NORMAL)); setLayerType(View.LAYER_TYPE_SOFTWARE, null); setMinimumHeight((int)dp(900)); }
+        DashboardView(Context c) { super(c); d = getResources().getDisplayMetrics().density; p.setTypeface(Typeface.create("sans", Typeface.NORMAL)); setBackgroundColor(bg); setMinimumHeight((int)dp(900)); }
         float dp(float v){ return v*d; }
         void rect(Canvas c,float l,float t,float r,float b,float radius,int color){ p.setColor(color); p.setStyle(Paint.Style.FILL); c.drawRoundRect(dp(l),dp(t),dp(r),dp(b),dp(radius),dp(radius),p); }
         void txt(Canvas c,String s,float x,float y,float size,int color,boolean bold){ p.setColor(color);p.setTextSize(dp(size));p.setTypeface(Typeface.create("sans",bold?Typeface.BOLD:Typeface.NORMAL));p.setStyle(Paint.Style.FILL);c.drawText(s,dp(x),dp(y),p); }
         @Override protected void onDraw(Canvas c){
+            super.onDraw(c);
             c.drawColor(bg);
             float w=getWidth()/d;
             float margin=Math.max(18, Math.min(24, w*0.05f));
