@@ -56,6 +56,17 @@ def test_sell_can_reduce_position_under_limit():
     assert decision.allowed
 
 
+def test_short_exposure_is_also_limited():
+    decision = check_order(
+        OrderRequest(symbol="SPY", side="sell", quantity=2),
+        reference_price=100,
+        account=account(Position("SPY", -19)),
+        limits=RiskLimits(max_order_notional=500, max_position_notional=2_000),
+    )
+    assert not decision.allowed
+    assert "position" in decision.reason
+
+
 def test_valid_order_passes():
     decision = check_order(
         OrderRequest(symbol="SPY", side="buy", quantity=2),
