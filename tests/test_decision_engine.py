@@ -63,6 +63,12 @@ def test_any_failed_gate_forces_no_trade(override, reason):
     assert reason in decision.reason_codes
 
 
+def test_stale_data_reason_is_not_duplicated():
+    decision = decide(snapshot(data_status="STALE", signal_age_seconds=86_401))
+    assert decision.action == "NO_TRADE"
+    assert decision.reason_codes.count("DATA_STALE") == 1
+
+
 def test_failed_gate_wins_over_high_probability():
     decision = decide(snapshot(probability=0.99, model_approved=False))
     assert decision.action == "NO_TRADE"
