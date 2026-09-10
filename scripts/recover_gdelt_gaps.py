@@ -14,7 +14,7 @@ import zipfile
 import pandas as pd
 import requests
 
-from scripts.ingest_gdelt_chunk import load_gdelt_day
+from ingest_gdelt_chunk import load_gdelt_day
 from market_predictor.research_schema import deduplicate_events, normalize_event_sources
 
 RECOVERY_RETRIES = 4
