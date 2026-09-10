@@ -1,19 +1,22 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from market_predictor.brokers.base import AccountSnapshot, OrderRequest, OrderResult, Position
 from market_predictor.brokers.execution import ExecutionEngine
 from market_predictor.brokers.risk import RiskLimits
 
 
 class FakeBroker:
-    def __init__(self):
+    def __init__(self, positions=()):
         self.submissions = []
+        self.positions = tuple(positions)
 
     def get_account(self):
-        return AccountSnapshot("USD", 10000, 10000, 5000, (Position("ABC", 0),))
+        return AccountSnapshot("USD", 10000, 10000, 5000, self.positions)
 
     def get_positions(self):
-        return ()
+        return self.positions
 
     def submit_order(self, order):
         self.submissions.append(order)
@@ -36,6 +39,18 @@ def test_execution_passes_risk_and_submits_once():
     assert second is first
     assert len(broker.submissions) == 1
     assert broker.submissions[0].client_order_id == "sig-1"
+    assert engine.audit_log() == (first,)
+
+
+def test_execution_rejects_reuse_of_client_id_for_different_order():
+    broker = FakeBroker()
+    engine = ExecutionEngine(broker)
+    engine.execute(OrderRequest("ABC", "buy", 1), reference_price=10, client_order_id="sig-1")
+
+    with pytest.raises(ValueError, match="different order"):
+        engine.execute(OrderRequest("ABC", "buy", 2), reference_price=10, client_order_id="sig-1")
+
+    assert len(broker.submissions) == 1
 
 
 def test_execution_never_submits_when_risk_rejects():
