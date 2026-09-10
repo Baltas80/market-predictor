@@ -44,6 +44,19 @@ class ExecutionEngine:
         self.kill_switch_provider = kill_switch_provider or (lambda: False)
         self._ledger: dict[str, ExecutionDecision] = {}
 
+    @staticmethod
+    def _with_client_order_id(order: OrderRequest, client_order_id: str) -> OrderRequest:
+        if order.client_order_id == client_order_id:
+            return order
+        return OrderRequest(
+            symbol=order.symbol,
+            side=order.side,
+            quantity=order.quantity,
+            order_type=order.order_type,
+            limit_price=order.limit_price,
+            client_order_id=client_order_id,
+        )
+
     def execute(
         self,
         order: OrderRequest,
@@ -53,39 +66,19 @@ class ExecutionEngine:
     ) -> ExecutionDecision:
         """Risk-check and submit an order exactly once per client order id.
 
-        A reused client ID is idempotent only when it refers to the same order
-        payload. Reusing an ID for a different order is rejected to prevent a
-        caller from accidentally receiving the first order's result.
+        A reused client ID is idempotent only when it refers to the same
+        normalized order payload. Reusing an ID for a different order raises
+        instead of returning an unrelated previous result.
         """
         if not client_order_id.strip():
             raise ValueError("client_order_id must not be empty")
 
+        order = self._with_client_order_id(order, client_order_id)
         previous = self._ledger.get(client_order_id)
         if previous is not None:
-            if previous.order != order and order.client_order_id != client_order_id:
-                normalized = OrderRequest(
-                    symbol=order.symbol,
-                    side=order.side,
-                    quantity=order.quantity,
-                    order_type=order.order_type,
-                    limit_price=order.limit_price,
-                    client_order_id=client_order_id,
-                )
-                if previous.order != normalized:
-                    raise ValueError("client_order_id already belongs to a different order")
-            elif previous.order != order:
+            if previous.order != order:
                 raise ValueError("client_order_id already belongs to a different order")
             return previous
-
-        if order.client_order_id != client_order_id:
-            order = OrderRequest(
-                symbol=order.symbol,
-                side=order.side,
-                quantity=order.quantity,
-                order_type=order.order_type,
-                limit_price=order.limit_price,
-                client_order_id=client_order_id,
-            )
 
         account = self.broker.get_account()
         risk = check_order(
