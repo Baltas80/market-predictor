@@ -121,6 +121,8 @@ def _checkpoint_path(checkpoint_dir: Path, day: str) -> Path:
 
 def _read_checkpoint(path: Path) -> pd.DataFrame:
     frame = pd.read_csv(path)
+    if frame.empty:
+        raise ValueError("GDELT checkpoint is empty; redownloading")
     for column in ("event_time", "published_at", "available_at"):
         if column in frame:
             frame[column] = pd.to_datetime(frame[column], utc=True, errors="coerce")
@@ -176,7 +178,6 @@ def fetch_gdelt_chunk(start: str, end: str, checkpoint_dir: Path | None = None) 
                 before = len(normalized)
                 normalized = normalized.dropna(subset=["event_id", "event_time", "available_at", "severity"]).copy()
                 dropped_unavailable += before - len(normalized)
-                # Checkpoint immediately after a successful parse/PIT normalization.
                 normalized.to_csv(
                     checkpoint,
                     index=False,
