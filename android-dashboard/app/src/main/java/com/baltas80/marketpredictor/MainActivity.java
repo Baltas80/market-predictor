@@ -3,10 +3,8 @@ package com.baltas80.marketpredictor;
 import android.app.Activity;
 import android.os.Bundle;
 import android.graphics.*;
-import android.graphics.drawable.GradientDrawable;
 import android.view.*;
 import android.content.Context;
-import java.util.Locale;
 
 public class MainActivity extends Activity {
     @Override public void onCreate(Bundle savedInstanceState) {
@@ -25,31 +23,46 @@ public class MainActivity extends Activity {
         @Override protected void onDraw(Canvas c){
             c.drawColor(bg);
             float w=getWidth()/d;
-            txt(c,"MARKET PREDICTOR",20,32,13,muted,true);
-            txt(c,"Research Dashboard",20,62,26,text,true);
-            txt(c,"RESEARCH ONLY  •  NO LIVE TRADING",20,86,11,warn,true);
-            card(c,20,102,w-20,184,"DATA COVERAGE","2015 — 2025","Historical dataset",good);
-            float gap=12, cw=(w-52)/2;
-            card(c,20,196,20+cw,278,"A/B/C STATUS","READY","Technical / Macro / Events",good);
-            card(c,32+cw,196,w-20,278,"LOCKBOX","PENDING","Waiting for final OOS",warn);
-            txt(c,"Performance",20,314,19,text,true);
-            card(c,20,328,w-20,470,"A/B/C FINANCIAL COMPARISON","","",accent);
-            drawChart(c,38,366,w-38,442);
-            txt(c,"A",42,458,11,muted,true); txt(c,"B",w/2-5,458,11,muted,true); txt(c,"C",w-58,458,11,muted,true);
-            txt(c,"Lockbox metrics",20,506,19,text,true);
-            metric(c,20,520, "ROC-AUC", "—", "Awaiting OOS");
-            metric(c,160,520,"Sharpe","—","Costs included");
-            metric(c,300,520,"Max DD","—","Risk metric");
-            txt(c,"Provenance",20,640,19,text,true);
-            rect(c,20,654,w-20,760,16,card);
-            txt(c,"Dataset hash",36,682,11,muted,false); txt(c,"PENDING",w-94,682,11,warn,true);
-            txt(c,"Code version",36,710,11,muted,false); txt(c,"LOCKBOX",w-94,710,11,good,true);
-            txt(c,"Status",36,738,11,muted,false); txt(c,"READ-ONLY",w-94,738,11,accent,true);
-            txt(c,"Prototype UI • Real results will replace placeholders after lockbox",20,790,10,muted,false);
+            float margin=20;
+            txt(c,"MARKET PREDICTOR",margin,32,13,muted,true);
+            txt(c,"Research Dashboard",margin,62,26,text,true);
+            txt(c,"RESEARCH ONLY  •  NO LIVE TRADING",margin,86,11,warn,true);
+
+            card(c,margin,102,w-margin,184,"DATA COVERAGE","2015 — 2025","Historical dataset • AVAILABLE",good);
+            float gap=12, cw=(w-2*margin-gap)/2;
+            card(c,margin,196,margin+cw,278,"A/B/C STATUS","CONFIGURED","Technical / Macro / Events",good);
+            card(c,margin+cw+gap,196,w-margin,278,"LOCKBOX","PENDING","Waiting for final OOS",warn);
+
+            txt(c,"Performance",margin,314,19,text,true);
+            rect(c,margin,328,w-margin,474,16,card);
+            txt(c,"A/B/C FINANCIAL COMPARISON",margin+16,353,10,muted,true);
+            txt(c,"PREVIEW • MOCK DATA",w-142,353,9,warn,true);
+            drawChart(c,margin+14,366,w-margin-14,440);
+            txt(c,"A",margin+8,462,11,muted,true); txt(c,"B",w/2-5,462,11,muted,true); txt(c,"C",w-margin-18,462,11,muted,true);
+
+            txt(c,"Lockbox metrics",margin,510,19,text,true);
+            float mw=(w-2*margin-2*gap)/3;
+            metric(c,margin,524,mw,"ROC-AUC","—","Awaiting OOS");
+            metric(c,margin+mw+gap,524,mw,"Sharpe","—","Costs included");
+            metric(c,margin+2*(mw+gap),524,mw,"Max DD","—","Risk metric");
+
+            txt(c,"Provenance",margin,656,19,text,true);
+            rect(c,margin,670,w-margin,796,16,card);
+            provenance(c,"Dataset hash","PENDING",696,w,warn);
+            provenance(c,"Code version","LOCKBOX",724,w,good);
+            provenance(c,"Protocol","PENDING",752,w,warn);
+            provenance(c,"Mode","READ-ONLY",780,w,accent);
+            txt(c,"Prototype UI • real results replace placeholders after lockbox",margin,824,10,muted,false);
         }
         void card(Canvas c,float l,float t,float r,float b,String title,String value,String sub,int state){
-            rect(c,l,t,r,b,16,card); txt(c,title,l+16,t+25,10,muted,true); txt(c,value,l+16,t+55,22,text,true); txt(c,sub,l+16,t+74,10,muted,false); rect(c,r-48,t+16,r-16,t+48,16,state); }
-        void metric(Canvas c,float x,float y,String title,String value,String sub){ rect(c,x,y,x+124,y+100,14,card);txt(c,title,x+12,y+23,10,muted,true);txt(c,value,x+12,y+55,20,text,true);txt(c,sub,x+12,y+78,9,muted,false); }
+            rect(c,l,t,r,b,16,card); txt(c,title,l+16,t+25,10,muted,true); txt(c,value,l+16,t+55,22,text,true); txt(c,sub,l+16,t+74,10,muted,false); rect(c,r-48,t+16,r-16,t+48,16,state);
+        }
+        void metric(Canvas c,float x,float y,float width,String title,String value,String sub){
+            rect(c,x,y,x+width,y+100,14,card); txt(c,title,x+12,y+23,10,muted,true); txt(c,value,x+12,y+55,20,text,true); txt(c,sub,x+12,y+78,9,muted,false);
+        }
+        void provenance(Canvas c,String label,String value,float y,float w,int color){
+            txt(c,label,36,y,11,muted,false); p.setTextAlign(Paint.Align.RIGHT); txt(c,value,w-36,y,11,color,true); p.setTextAlign(Paint.Align.LEFT);
+        }
         void drawChart(Canvas c,float l,float t,float r,float b){
             p.setColor(Color.rgb(51,65,85));p.setStrokeWidth(dp(1));p.setStyle(Paint.Style.STROKE);c.drawRoundRect(dp(l),dp(t),dp(r),dp(b),dp(10),dp(10),p);
             Path path=new Path(); float[] vals={.24f,.31f,.28f,.42f,.38f,.52f,.49f,.63f,.58f,.71f,.68f,.79f};
