@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Market Predictor Paper Decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["timestamp", "symbol", "model", "prediction", "decision", "risk", "data_quality", "provenance"],
+  "properties": {
+    "timestamp": {"type": "string", "format": "date-time"},
+    "symbol": {"type": "string", "minLength": 1},
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["family", "version"],
+      "properties": {
+        "family": {"type": "string", "enum": ["A", "B", "C", "D"]},
+        "version": {"type": "string", "minLength": 1},
+        "feature_schema_version": {"type": "string"}
+      }
+    },
+    "prediction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["probability", "confidence"],
+      "properties": {
+        "probability": {"type": "number", "minimum": 0, "maximum": 1},
+        "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "reason_codes"],
+      "properties": {
+        "action": {"type": "string", "enum": ["LONG", "SHORT", "FLAT", "NO_TRADE"]},
+        "reason_codes": {"type": "array", "items": {"type": "string"}, "minItems": 1}
+      }
+    },
+    "risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proposed_exposure", "estimated_edge_after_costs"],
+      "properties": {
+        "proposed_exposure": {"type": "number", "minimum": 0},
+        "estimated_edge_after_costs": {"type": "number"}
+      }
+    },
+    "data_quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {"type": "string", "enum": ["PASS", "WARN", "FAIL"]},
+        "stale": {"type": "boolean"}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["experiment_id"],
+      "properties": {
+        "experiment_id": {"type": "string", "minLength": 1},
+        "config_hash": {"type": "string"},
+        "dataset_hash": {"type": "string"}
+      }
+    }
+  }
+}
