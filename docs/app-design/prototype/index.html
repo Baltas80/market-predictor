@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Market Predictor — UI prototype</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="board">
+    <header class="hero">
+      <div>
+        <span class="eyebrow">PRODUCT UI / V1</span>
+        <h1>Market <span>Predictor</span></h1>
+        <p>Datos. IA. Estrategias. Mejores decisiones.</p>
+      </div>
+      <div class="hero-state"><b>RESEARCH</b><span>Point-in-time activo</span></div>
+    </header>
+
+    <section class="phones" aria-label="Pantallas principales">
+      <article class="phone">
+        <div class="status"><span>9:41</span><span>● ◐ ▮</span></div>
+        <div class="appbar"><b>☰</b><strong>Market Predictor</strong><span>◌</span></div>
+        <div class="env"><b>RESEARCH</b><span>PAPER</span><span>LIVE</span></div>
+        <div class="greeting">Hola, inversor<small>La inteligencia de los mercados en tu mano.</small></div>
+        <div class="metrics">
+          <div><small>S&amp;P 500</small><b>5.472,18</b><em>+0,82%</em></div>
+          <div><small>NASDAQ</small><b>17.280,45</b><em>+1,14%</em></div>
+          <div><small>IBEX 35</small><b>11.231,90</b><em>+0,66%</em></div>
+          <div><small>VIX</small><b>14,82</b><i>-2,31%</i></div>
+        </div>
+        <div class="card portfolio"><div><small>Mi cartera</small><b>25.420,18 €</b></div><strong>+2,36%</strong><svg viewBox="0 0 300 70" aria-label="Evolución de cartera"><polyline points="0,55 28,50 50,57 78,38 102,45 130,31 157,36 184,20 211,28 240,14 268,18 300,6"/></svg></div>
+        <div class="card signal"><div class="row"><b>Señal IA</b><span class="pill good">ALCISTA</span></div><strong>Confianza 68%</strong><div class="bars"><i></i><i></i><i></i><i></i><i></i></div><small>Macro · Tendencia · Momentum</small></div>
+        <div class="card risk"><span>●</span><div><b>Risk Gate</b><small>Operativo · Sin bloqueos</small></div><strong>OK</strong></div>
+        <nav><span class="active">⌂<small>Inicio</small></span><span>⌁<small>Mercados</small></span><span>◈<small>Señales</small></span><span>▣<small>Cartera</small></span><span>•••<small>Más</small></span></nav>
+      </article>
+
+      <article class="phone">
+        <div class="status"><span>9:41</span><span>● ◐ ▮</span></div>
+        <div class="appbar"><b>‹</b><strong>S&amp;P 500</strong><span>⋮</span></div>
+        <div class="sub">SPX · S&amp;P 500 Index</div>
+        <div class="price">5.472,18 <em>+44,60 (+0,82%)</em></div>
+        <div class="range"><span>1D</span><span>1S</span><b>1M</b><span>3M</span><span>1A</span><span>5A</span></div>
+        <div class="chart"><svg viewBox="0 0 320 180" preserveAspectRatio="none"><path class="grid" d="M0 30H320M0 90H320M0 150H320"/><polyline points="0,146 20,138 38,142 57,119 76,125 96,101 115,111 133,88 152,96 172,69 191,77 211,58 230,65 248,47 270,55 292,29 320,38"/></svg><div class="chart-time"><span>10 ago</span><span>17 ago</span><span>24 ago</span><span>31 ago</span></div></div>
+        <div class="card"><small>Datos clave</small><div class="kv"><span>Apertura <b>5.432,10</b></span><span>Máximo <b>5.482,76</b></span><span>Mínimo <b>5.421,33</b></span><span>Volumen <b>2,41B</b></span></div></div>
+        <div class="card prediction"><div class="row"><b>Señal de IA</b><span class="pill good">ALCISTA</span></div><strong>68% <small>confianza</small></strong><div class="meter"><i></i></div><div class="tags"><span>Tendencia ↑</span><span>Momentum ↑</span><span>Macro ↑</span></div></div>
+        <div class="card pit"><b>Datos disponibles</b><small>Último evento: 2026-09-09 08:45 UTC</small><small>Modelo: predictor-v0.1 · sin look-ahead</small></div>
+        <div class="actions"><button>◷ Alerta</button><button class="primary">＋ Añadir a cartera</button></div>
+        <nav><span>⌂<small>Inicio</small></span><span class="active">⌁<small>Mercados</small></span><span>◈<small>Señales</small></span><span>▣<small>Cartera</small></span><span>•••<small>Más</small></span></nav>
+      </article>
+
+      <article class="phone">
+        <div class="status"><span>9:41</span><span>● ◐ ▮</span></div>
+        <div class="appbar"><b>☰</b><strong>Agentes IA</strong><span>◌</span></div>
+        <div class="tabs"><b>Todos</b><span>Activos</span><span>Rendimiento</span></div>
+        <div class="agent active-agent"><div class="agent-icon macro">✦</div><div><b>ORÁCULO</b><small>Análisis macroeconómico y régimen de mercado</small><span class="status-good">Activo · 08:41 UTC</span></div><strong>↗</strong></div>
+        <div class="agent"><div class="agent-icon tech">⌁</div><div><b>ATLAS</b><small>Tendencias y análisis técnico</small><span class="status-good">Activo · 08:39 UTC</span></div><strong>↗</strong></div>
+        <div class="agent"><div class="agent-icon news">▤</div><div><b>NEWS AI</b><small>Noticias y eventos en tiempo real</small><span class="status-paper">Paper Trading</span></div><strong>↗</strong></div>
+        <div class="agent"><div class="agent-icon value">◉</div><div><b>VALUE AI</b><small>Inversión en valor a largo plazo</small><span class="status-test">En prueba</span></div><strong>↗</strong></div>
+        <div class="agent guardian"><div class="agent-icon guard">✓</div><div><b>GUARDIAN</b><small>Gestor de riesgo y supervisión</small><span class="status-good">Siempre activo</span></div><strong>↗</strong></div>
+        <div class="card consensus"><small>Consenso de agentes</small><div class="consensus-line"><b>ALCISTA</b><strong>4 / 5</strong></div><div class="meter"><i style="width:78%"></i></div><small>Discrepancia: baja · confianza agregada 78%</small></div>
+        <div class="card audit"><b>Última decisión de GUARDIAN</b><small>09:02 UTC · Orden propuesta AAPL · 500 €</small><span class="pill good">RIESGO APROBADO</span></div>
+        <nav><span>⌂<small>Inicio</small></span><span>⌁<small>Mercados</small></span><span class="active">◈<small>Agentes</small></span><span>▣<small>Cartera</small></span><span>•••<small>Más</small></span></nav>
+      </article>
+
+      <article class="phone">
+        <div class="status"><span>9:41</span><span>● ◐ ▮</span></div>
+        <div class="appbar"><b>‹</b><strong>Revisión de orden</strong><span>⋮</span></div>
+        <div class="env live"><b>PAPER</b><span>Entorno seguro</span></div>
+        <div class="order-title"><small>AAPL · Apple Inc.</small><h2>Comprar</h2><strong>10 acciones</strong></div>
+        <div class="order-grid"><div><small>Tipo</small><b>Limit</b></div><div><small>Precio límite</small><b>175,50 €</b></div><div><small>Nominal</small><b>1.755,00 €</b></div><div><small>Client ID</small><b>MP-8F31</b></div></div>
+        <div class="card gate"><div class="row"><b>GUARDIAN · Risk Gate</b><span class="pill good">APROBADO</span></div><p>La orden cumple los límites independientes de riesgo.</p><div class="kv"><span>Máx. por operación <b>500 €</b></span><span>Orden solicitada <b>175,50 €</b></span><span>Pérdida diaria <b>0 €</b></span><span>Buying power <b>7.842 €</b></span></div></div>
+        <div class="card timeline"><b>Auditoría</b><div class="step done"><i>✓</i><span>Señal propuesta<small>08:58 UTC · predictor-v0.1</small></span></div><div class="step done"><i>✓</i><span>Risk Gate<small>08:59 UTC · aprobado</small></span></div><div class="step current"><i>3</i><span>Revisión del usuario<small>Esperando confirmación</small></span></div><div class="step"><i>4</i><span>Envío al broker<small>Solo tras confirmación</small></span></div></div>
+        <button class="submit">Revisar y enviar</button>
+        <small class="safety-note">El modelo no puede saltarse el Risk Gate. LIVE requiere una confirmación explícita.</small>
+        <nav><span>⌂<small>Inicio</small></span><span>⌁<small>Mercados</small></span><span>◈<small>Señales</small></span><span class="active">⇧<small>Ejecutar</small></span><span>•••<small>Más</small></span></nav>
+      </article>
+    </section>
+  </main>
+</body>
+</html>
