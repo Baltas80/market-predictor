@@ -170,6 +170,8 @@ def fetch_gdelt_chunk(start: str, end: str, checkpoint_dir: Path | None = None) 
         for attempt in range(1, GDELT_DAY_RETRIES + 1):
             try:
                 raw_day = load_gdelt_day(current)
+                if "event_id" not in raw_day and "global_event_id" in raw_day:
+                    raw_day = raw_day.rename(columns={"global_event_id": "event_id"})
                 normalized = normalize_event_sources(raw_day, source_id="GDELT_2_Event_Database")
                 before = len(normalized)
                 normalized = normalized.dropna(subset=["event_id", "event_time", "available_at", "severity"]).copy()
