@@ -1,9 +1,11 @@
-from market_predictor.brokers import AccountSnapshot, OrderRequest
+from market_predictor.brokers import AccountSnapshot, OrderRequest, Position
 from market_predictor.brokers.risk import RiskLimits, check_order
 
 
-def account() -> AccountSnapshot:
-    return AccountSnapshot(currency="USD", cash=10_000, equity=10_000, buying_power=10_000)
+def account(*positions: Position) -> AccountSnapshot:
+    return AccountSnapshot(
+        currency="USD", cash=10_000, equity=10_000, buying_power=10_000, positions=positions
+    )
 
 
 def test_kill_switch_blocks_order():
@@ -27,6 +29,27 @@ def test_order_notional_limit_blocks_order():
     )
     assert not decision.allowed
     assert "notional" in decision.reason
+
+
+def test_projected_position_notional_limit_blocks_order():
+    decision = check_order(
+        OrderRequest(symbol="SPY", side="buy", quantity=15),
+        reference_price=100,
+        account=account(Position(symbol="SPY", quantity=10)),
+        limits=RiskLimits(max_order_notional=2_000, max_position_notional=2_000),
+    )
+    assert not decision.allowed
+    assert "projected position" in decision.reason
+
+
+def test_position_reduction_is_allowed_when_projected_position_is_within_limit():
+    decision = check_order(
+        OrderRequest(symbol="SPY", side="sell", quantity=5),
+        reference_price=100,
+        account=account(Position(symbol="SPY", quantity=20)),
+        limits=RiskLimits(max_order_notional=1_000, max_position_notional=2_000),
+    )
+    assert decision.allowed
 
 
 def test_valid_order_passes():
