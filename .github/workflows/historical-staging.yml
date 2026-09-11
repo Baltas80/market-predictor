@@ -29,7 +29,7 @@ permissions:
 jobs:
   stage:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 720
     steps:
       - name: Checkout
         uses: actions/checkout@v5
