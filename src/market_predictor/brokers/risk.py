@@ -47,4 +47,12 @@ def check_order(
     if notional > account.buying_power:
         return RiskDecision(False, "insufficient buying power")
 
+    current_quantity = sum(
+        position.quantity for position in account.positions if position.symbol == order.symbol
+    )
+    signed_quantity = order.quantity if order.side == "buy" else -order.quantity
+    projected_position_notional = abs(current_quantity + signed_quantity) * reference_price
+    if projected_position_notional > limits.max_position_notional:
+        return RiskDecision(False, "projected position notional exceeds limit")
+
     return RiskDecision(True, "order passed risk checks")
