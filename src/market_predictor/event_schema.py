@@ -84,5 +84,7 @@ class MarketEvent:
             )
             if event_time.tzinfo is None:
                 raise ValueError("event_time must be timezone-aware")
+            if available is not None and event_time > available:
+                raise ValueError("event_time cannot be after available_at")
             if published is not None and event_time > published:
                 raise ValueError("event_time cannot be after published_at")
