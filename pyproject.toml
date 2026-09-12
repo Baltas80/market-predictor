@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8,<9"]
+gcp = ["google-cloud-bigquery>=3.30,<4"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

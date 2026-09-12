@@ -1,0 +1,208 @@
+name: GDELT 2.0 BigQuery Historical Acquisition
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/gdelt2-primary]
+
+permissions:
+  contents: read
+  id-token: write
+  actions: read
+
+concurrency:
+  group: gdelt2-bigquery-historical
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: "1"
+  GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+
+jobs:
+  stage-base:
+    name: STAGE MARKET + FRED
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install package
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[test]"
+      - name: Stage base historical data without GDELT or SEC RSS
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: |
+          set +e
+          for attempt in 1 2 3; do
+            echo "FRED/base staging attempt ${attempt}/3"
+            python scripts/ingest_historical.py --output-dir data/historical --execute --skip-gdelt --skip-sec
+            status=$?
+            if [ "$status" -eq 0 ]; then exit 0; fi
+            if [ "$attempt" -lt 3 ]; then
+              rm -rf data/historical
+              sleep 90
+            fi
+          done
+          exit "$status"
+      - name: Upload base staging
+        uses: actions/upload-artifact@v7
+        with:
+          name: gdelt2-base-${{ github.sha }}
+          path: data/historical/
+          if-no-files-found: error
+          retention-days: 30
+
+  prepare-matrix:
+    name: PREPARE 28-DAY GDELT2 MATRIX
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Build availability-date matrix
+        id: matrix
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import datetime, json, sys
+          start = datetime.date(2015, 2, 19)
+          end = datetime.date(2025, 12, 31)
+          rows = []
+          cur = start
+          chunk = 1
+          while cur <= end:
+              chunk_end = min(cur + datetime.timedelta(days=27), end)
+              rows.append({"chunk": chunk, "start": cur.isoformat(), "end": chunk_end.isoformat()})
+              cur = chunk_end + datetime.timedelta(days=1)
+              chunk += 1
+          print("matrix=" + json.dumps({"include": rows}, separators=(",", ":")))
+          print(f"GDELT2 chunks: {len(rows)}", file=sys.stderr)
+          PY
+
+  gdelt2-chunks:
+    name: GDELT2 ${{ matrix.start }} → ${{ matrix.end }}
+    needs: prepare-matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+      - name: Install package with BigQuery support
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test,gcp]"
+      - name: Query one immutable GDELT2 availability window
+        run: |
+          mkdir -p data/gdelt2_chunks
+          python scripts/ingest_gdelt2_bigquery.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --project "${GCP_PROJECT_ID}" \
+            --output "data/gdelt2_chunks/gdelt2_${{ matrix.chunk }}_${{ matrix.start }}_${{ matrix.end }}.csv.gz" \
+            --missing-output "data/gdelt2_chunks/gdelt2_${{ matrix.chunk }}_missing.csv"
+      - name: Upload completed GDELT2 chunk
+        uses: actions/upload-artifact@v7
+        with:
+          name: gdelt2-${{ matrix.chunk }}-${{ matrix.start }}-${{ matrix.end }}
+          path: data/gdelt2_chunks/gdelt2_${{ matrix.chunk }}_${{ matrix.start }}_${{ matrix.end }}.csv.gz
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  finalize:
+    name: ASSEMBLE + HISTORICAL GATE
+    needs: [stage-base, gdelt2-chunks]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install package
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[test]"
+      - name: Download base staging
+        uses: actions/download-artifact@v8
+        with:
+          name: gdelt2-base-${{ github.sha }}
+          path: data/historical
+      - name: Download all GDELT2 chunks
+        uses: actions/download-artifact@v8
+        with:
+          pattern: gdelt2-*-*-*
+          path: data/gdelt2_chunks
+          merge-multiple: true
+      - name: Finalize GDELT2 staging and historical gate
+        run: |
+          python scripts/finalize_gdelt2_bigquery.py \
+            --chunks data/gdelt2_chunks \
+            --output data/historical/normalized/events_gdelt.csv.gz
+          python scripts/finalize_historical_staging_gdelt2.py \
+            --staging data/historical \
+            --events data/historical/normalized/events_gdelt.csv.gz
+      - name: Upload final historical staging
+        uses: actions/upload-artifact@v7
+        with:
+          name: gdelt2-historical-final-${{ github.sha }}
+          path: data/historical/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  real-lockbox:
+    name: REAL DATA → PIT → A/B/C → LOCKBOX → FINANCIAL REPORT
+    needs: finalize
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install package
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[test]"
+      - name: Download final historical staging
+        uses: actions/download-artifact@v8
+        with:
+          name: gdelt2-historical-final-${{ github.sha }}
+          path: data/historical
+      - name: Run frozen A/B/C lockbox and financial evaluation
+        run: python scripts/run_real_lockbox.py --staging data/historical --output data/results
+      - name: Run regression suite
+        run: python -m pytest -q
+      - name: Upload real-data results
+        uses: actions/upload-artifact@v7
+        with:
+          name: gdelt2-real-lockbox-results-${{ github.sha }}
+          path: |
+            data/results/
+            data/historical/staging_result.json
+            data/historical/source_manifest.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
