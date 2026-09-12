@@ -1,4 +1,4 @@
-version: 2
+version: 3
 updated_at: 2026-09-12
 purpose: point_in_time_market_prediction
 sources:
@@ -26,15 +26,22 @@ sources:
     primary_use: macro_features
   events:
     provider: GDELT_Project
-    dataset: GDELT_2_Event_Database
-    archive: https://data.gdeltproject.org/events/
+    production_dataset: GDELT_1_Daily_Event_Database
+    production_archive: https://data.gdeltproject.org/events/
     coverage_start: 2015-02-19
     coverage_end: 2025-12-31
-    availability_field: DATEADDED
+    availability_field: conservative_next_day_boundary
     availability_timezone: UTC
-    deduplication_key: GLOBALEVENTID
+    production_availability_policy: 12:00 UTC on day after file date
+    publication_time: unknown
     primary_use: geopolitical_and_event_features
-    caveat: DATEADDED_is_database_availability_proxy_not_original_article_publication_time
+    caveat: production_track is GDELT 1.0 daily data; it is not GDELT 2.0
+    research_track:
+      dataset: GDELT_2_Event_Database
+      archive: https://data.gdeltproject.org/gdeltv2/
+      update_interval: 15_minutes
+      availability_field: DATEADDED
+      status: acquisition_and_validation_only
   scandals_and_fraud:
     provider: U.S._Securities_and_Exchange_Commission
     dataset: Litigation_Releases
