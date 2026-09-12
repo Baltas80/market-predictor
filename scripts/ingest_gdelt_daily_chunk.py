@@ -24,7 +24,7 @@ from market_predictor.research_schema import deduplicate_events, normalize_event
 
 GDELT_DAY_RETRIES = 4
 GDELT_RETRY_BASE_SECONDS = 2
-GDELT_CHECKPOINT_VERSION = "gdelt1-daily-pit-v1"
+GDELT_CHECKPOINT_VERSION = "gdelt1-daily-pit-v2"
 GDELT_SOURCE_ID = "GDELT_1_Daily_Event_Database"
 GDELT_DAILY_URL = "https://data.gdeltproject.org/events/{date}.export.CSV.zip"
 
@@ -109,6 +109,41 @@ def load_gdelt_daily_day(day: str | pd.Timestamp) -> pd.DataFrame:
     return normalize_event_sources(frame, source_id=GDELT_SOURCE_ID)
 
 
+def _invalid_event_mask(frame: pd.DataFrame) -> pd.Series:
+    """Identify structurally unusable source rows before chunk-level validation."""
+    data = frame.copy()
+    text_invalid = pd.Series(False, index=data.index)
+    for column in ("event_id", "source_id", "category"):
+        values = data[column].astype("string").str.strip().str.lower()
+        text_invalid |= data[column].isna() | values.isin({"", "nan", "none", "nat", "<na>"})
+    timestamps_invalid = (
+        data[["event_time", "available_at"]].isna().any(axis=1)
+        | (data["available_at"] < data["event_time"])
+    )
+    severity = pd.to_numeric(data["severity"], errors="coerce")
+    severity_invalid = severity.isna() | ~severity.map(pd.notna)
+    return text_invalid | timestamps_invalid | severity_invalid
+
+
+def _quarantine_invalid_rows(frame: pd.DataFrame, source_day: date, checkpoint_dir: Path) -> tuple[pd.DataFrame, int]:
+    """Quarantine malformed rows with an auditable sidecar instead of poisoning the whole chunk."""
+    invalid = _invalid_event_mask(frame)
+    if not invalid.any():
+        return frame, 0
+    rejected = frame.loc[invalid].copy()
+    rejected.insert(0, "source_day", source_day.isoformat())
+    rejected.insert(1, "quarantine_reason", "invalid_required_event_field")
+    path = checkpoint_dir / f"invalid_{source_day.isoformat()}.csv"
+    rejected.to_csv(path, index=False, lineterminator="\n", date_format="%Y-%m-%dT%H:%M:%S%z")
+    clean = frame.loc[~invalid].copy()
+    print(
+        f"GDELT 1.0 quarantined {len(rejected)} malformed rows for {source_day.isoformat()}; "
+        f"sidecar={path}",
+        flush=True,
+    )
+    return clean, len(rejected)
+
+
 def _checkpoint_path(checkpoint_dir: Path, day: str) -> Path:
     return checkpoint_dir / f"day_{pd.Timestamp(day).date().isoformat()}.csv"
 
@@ -157,8 +192,9 @@ def fetch_gdelt_daily_chunk(start: str, end: str, checkpoint_dir: Path) -> tuple
         for attempt in range(1, GDELT_DAY_RETRIES + 1):
             try:
                 normalized = load_gdelt_daily_day(current)
+                normalized, _ = _quarantine_invalid_rows(normalized, current, checkpoint_dir)
                 if normalized.empty:
-                    raise ValueError(f"GDELT 1.0 source-day {current.isoformat()} returned no rows")
+                    raise ValueError(f"GDELT 1.0 source-day {current.isoformat()} has no valid event rows")
                 normalized["checkpoint_version"] = GDELT_CHECKPOINT_VERSION
                 normalized.to_csv(checkpoint, index=False, lineterminator="\n", date_format="%Y-%m-%dT%H:%M:%S%z")
                 frames.append(normalized.drop(columns=["checkpoint_version"]))
