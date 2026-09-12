@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
+
 import pandas as pd
 
 GDELT_COLUMNS = {
@@ -9,6 +11,23 @@ GDELT_COLUMNS = {
     "EventCode": "cameo_code", "QuadClass": "quad_class", "GoldsteinScale": "goldstein_scale",
     "NumMentions": "num_mentions", "NumSources": "num_sources", "AvgTone": "avg_tone", "SOURCEURL": "source_url",
 }
+
+
+def _canonical_date_added(value: object) -> str | pd._libs.missing.NAType:
+    """Canonicalize exact integer-like GDELT DATEADDED encodings only."""
+    if value is None or pd.isna(value):
+        return pd.NA
+    text = str(value).strip()
+    if text.isdigit() and len(text) == 14:
+        return text
+    try:
+        number = Decimal(text)
+    except (InvalidOperation, ValueError):
+        return pd.NA
+    if not number.is_finite() or number != number.to_integral_value():
+        return pd.NA
+    canonical = format(number.to_integral_value(), "f")
+    return canonical if canonical.isdigit() and len(canonical) == 14 else pd.NA
 
 
 def normalize_gdelt_events(raw: pd.DataFrame) -> pd.DataFrame:
@@ -29,7 +48,8 @@ def normalize_gdelt_events(raw: pd.DataFrame) -> pd.DataFrame:
     if "source_url" not in out.columns:
         out["source_url"] = pd.Series(pd.NA, index=out.index, dtype="string")
     out["event_date"] = pd.to_datetime(out["event_date"].astype("string"), format="%Y%m%d", utc=True, errors="coerce")
-    out["available_time"] = pd.to_datetime(out["available_time"].astype("string"), format="%Y%m%d%H%M%S", utc=True, errors="coerce")
+    canonical = out["available_time"].map(_canonical_date_added).astype("string")
+    out["available_time"] = pd.to_datetime(canonical, format="%Y%m%d%H%M%S", utc=True, errors="coerce")
     if out[["event_date", "available_time"]].isna().any().any():
         raise ValueError("GDELT event or availability timestamps are invalid")
     if (out["available_time"] < out["event_date"]).any():
