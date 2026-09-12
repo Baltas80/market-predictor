@@ -1,0 +1,56 @@
+name: GDELT Source Canary
+
+on:
+  push:
+    branches:
+      - fix/gdelt-source-canary
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Inspect raw GDELT daily archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv
+          import io
+          import re
+          import urllib.request
+          import zipfile
+
+          dates = ["20150219", "20150319", "20250101"]
+          for date in dates:
+              url = f"https://data.gdeltproject.org/events/{date}.export.CSV.zip"
+              print(f"=== {date} ===")
+              with urllib.request.urlopen(url, timeout=120) as response:
+                  payload = response.read()
+              print(f"archive_bytes={len(payload)}")
+              with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                  names = archive.namelist()
+                  print(f"members={names}")
+                  with archive.open(names[0]) as raw:
+                      sample = []
+                      for index, line in enumerate(raw):
+                          fields = line.decode("utf-8", errors="replace").rstrip("\\r\\n").split("\\t")
+                          sample.append(fields)
+                          if index >= 999:
+                              break
+              counts = {}
+              for fields in sample:
+                  counts[len(fields)] = counts.get(len(fields), 0) + 1
+              print(f"field_counts_first_1000={counts}")
+              for width, n in sorted(counts.items()):
+                  row = next(fields for fields in sample if len(fields) == width)
+                  print(f"width={width} tail={row[-6:]}")
+                  date_like = []
+                  for offset, value in enumerate(row[-8:], start=max(0, width - 8)):
+                      text = value.strip()
+                      if re.fullmatch(r"\\d{14}", text):
+                          date_like.append((offset, text))
+                  print(f"width={width} 14digit_tail_candidates={date_like}")
+          PY
