@@ -10,7 +10,7 @@ import pandas as pd
 
 from .historical_adapters import fetch_fred, fetch_gdelt, fetch_market, fetch_sec
 from .historical_ingestion import SourceManifest, build_source_manifest, write_source_manifest
-from .historical_coverage import DATASET_START, DATASET_END
+from .historical_coverage import DATASET_START, DATASET_END, GDELT_SOURCE
 from .historical_gate import validate_historical_dataset
 
 
@@ -121,7 +121,7 @@ def stage_historical(
 
     event_frames: list[pd.DataFrame] = []
     if include_gdelt:
-        gdelt = gdelt_fetcher("2015-01-01", DATASET_END.isoformat())
+        gdelt = gdelt_fetcher(GDELT_SOURCE.start.isoformat(), DATASET_END.isoformat())
         _write_frame(gdelt, raw_dir / "events_gdelt.csv")
         _write_frame(gdelt, normalized_dir / "events_gdelt.csv")
         if not gdelt.empty:
@@ -150,7 +150,7 @@ def stage_historical(
             event_frames.append(sec)
         limitations.append("SEC adapter is an RSS snapshot and does not provide a verified 2000-2025 archive")
     if include_gdelt:
-        limitations.append("GDELT historical event coverage begins in 2015; it is not a 2000-2014 event source")
+        limitations.append("GDELT historical event coverage begins in 2015-02-19; it is not a 2000-2015-02-18 event source")
 
     stage_map["hash"]["status"] = "complete"
     events = pd.concat(event_frames, ignore_index=True) if event_frames else None
