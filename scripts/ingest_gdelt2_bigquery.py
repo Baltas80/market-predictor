@@ -28,11 +28,18 @@ SELECT_FIELDS = """
 def _query(client, start: date, end: date) -> pd.DataFrame:
     from google.cloud import bigquery
 
+    # _PARTITIONDATE prunes ingestion-time partitions; DATEADDED is then
+    # filtered explicitly so the PIT window is defined by GDELT availability,
+    # not by BigQuery ingestion timing.
     sql = f"""
     SELECT {SELECT_FIELDS}
     FROM {TABLE}
-    WHERE _PARTITIONDATE BETWEEN @start_date AND @end_date
+    WHERE _PARTITIONDATE BETWEEN DATE_SUB(@start_date, INTERVAL 1 DAY)
+                              AND DATE_ADD(@end_date, INTERVAL 1 DAY)
       AND DATEADDED IS NOT NULL
+      AND DATEADDED BETWEEN
+            CAST(FORMAT_DATE('%Y%m%d000000', @start_date) AS INT64)
+        AND CAST(FORMAT_DATE('%Y%m%d235959', @end_date) AS INT64)
       AND SQLDATE IS NOT NULL
       AND SQLDATE <= CAST(FORMAT_DATE('%Y%m%d', @end_date) AS INT64)
     """
@@ -92,11 +99,13 @@ def _normalize(frame: pd.DataFrame) -> pd.DataFrame:
 
     normalized = normalize_event_sources(frame, source_id=SOURCE_ID)
     normalized = normalized.dropna(subset=["event_id", "event_time", "available_at", "severity"]).copy()
-    return normalized[normalized["available_at"] >= normalized["event_time"]].copy()
+    normalized = normalized[normalized["available_at"] >= normalized["event_time"]].copy()
+    return normalized
 
 
 def fetch_range(client, start: date, end: date, output: Path, missing_output: Path) -> None:
-    frame = _normalize(_query(client, start, end))
+    raw = _query(client, start, end)
+    frame = _normalize(raw)
     if frame.empty:
         raise RuntimeError(f"BigQuery returned no valid GDELT 2 rows for {start} -> {end}")
     frame = deduplicate_events(frame)
@@ -104,7 +113,11 @@ def fetch_range(client, start: date, end: date, output: Path, missing_output: Pa
     frame.to_csv(output, index=False, lineterminator="\n", date_format="%Y-%m-%dT%H:%M:%S%z")
     pd.DataFrame(columns=["date", "source_id", "status", "error_type", "error"]).to_csv(
         missing_output, index=False, lineterminator="\n")
-    print(f"GDELT 2 BigQuery chunk saved: {start} -> {end}; rows={len(frame)}", flush=True)
+    print(
+        f"GDELT 2 BigQuery chunk saved: {start} -> {end}; "
+        f"raw_rows={len(raw)} normalized_rows={len(frame)}",
+        flush=True,
+    )
 
 
 def main() -> int:
