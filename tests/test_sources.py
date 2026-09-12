@@ -27,6 +27,45 @@ def test_gdelt_normalization_maps_core_fields():
     assert out.loc[0, "intensity"] > 0
 
 
+def test_gdelt_normalization_accepts_exact_numeric_dateadded_encodings():
+    raw = pd.DataFrame(
+        {
+            "GlobalEventID": [123, 124],
+            "SQLDATE": ["20240115", "20240115"],
+            "DATEADDED": ["20240115123000.0", "2.024011513e13"],
+            "EventCode": [190, 190],
+            "QuadClass": [4, 4],
+            "GoldsteinScale": [-7.0, -7.0],
+            "NumMentions": [9, 9],
+            "NumSources": [3, 3],
+            "AvgTone": [-4.2, -4.2],
+        }
+    )
+    out = normalize_gdelt_events(raw)
+    assert out["available_time"].tolist() == [
+        pd.Timestamp("2024-01-15 12:30:00", tz="UTC"),
+        pd.Timestamp("2024-01-15 13:00:00", tz="UTC"),
+    ]
+
+
+def test_gdelt_normalization_rejects_non_integral_dateadded():
+    raw = pd.DataFrame(
+        {
+            "GlobalEventID": [123],
+            "SQLDATE": ["20240115"],
+            "DATEADDED": ["20240115123000.9"],
+            "EventCode": [190],
+            "QuadClass": [4],
+            "GoldsteinScale": [-7.0],
+            "NumMentions": [9],
+            "NumSources": [3],
+            "AvgTone": [-4.2],
+        }
+    )
+    with pytest.raises(ValueError, match="timestamps are invalid"):
+        normalize_gdelt_events(raw)
+
+
 def test_market_csv_rejects_invalid_ohlcv(tmp_path):
     path = tmp_path / "bad.csv"
     path.write_text(
