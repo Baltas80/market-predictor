@@ -35,14 +35,9 @@ MARKET_SOURCE = SourceCoverage(
     "Daily market bars; executable-trading interpretation remains separate from the cash index.",
 )
 
-# DFF is excluded because FRED exposes the series but not the ALFRED real-time
-# history needed for a strict point-in-time dataset. FEDFUNDS provides the
-# vintage-aware federal-funds-rate history used by the staging adapter.
-#
-# The requested research period remains 2000-2025, but PIT availability is
-# discovered per series through FRED's series/vintagedates endpoint. A series
-# whose first valid vintage is later than 2000 is never backfilled with today's
-# revised value; its early period remains unavailable to PIT feature builders.
+# DFF is excluded because FRED exposes the series but does not provide the
+# ALFRED real-time history required by this point-in-time pipeline. FEDFUNDS
+# provides the vintage-aware federal-funds-rate history used by staging.
 FRED_SOURCES = tuple(
     SourceCoverage(
         "fred_vintages",
@@ -56,10 +51,12 @@ FRED_SOURCES = tuple(
     for series in ("FEDFUNDS", "DGS10", "CPIAUCSL", "UNRATE", "VIXCLS")
 )
 
+# GDELT 2.0 Event Database begins on 2015-02-19. Earlier dates are not source
+# gaps and must never be queued for download/recovery.
 GDELT_SOURCE = SourceCoverage(
     "gdelt_events",
     "GDELT 2.0 Events",
-    date(2015, 1, 1),
+    date(2015, 2, 19),
     DATASET_END,
     True,
     True,
