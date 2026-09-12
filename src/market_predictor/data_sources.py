@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from decimal import Decimal, InvalidOperation
 from io import BytesIO, StringIO
 from pathlib import Path
 import hashlib
@@ -231,6 +232,29 @@ def _gdelt_category(event_root_code: str, event_code: str, actor_text: str) -> s
     return "political_crisis"
 
 
+def _canonical_gdelt_date_added(value: object) -> str | None:
+    """Canonicalize exact integer-like GDELT DATEADDED encodings without rounding."""
+    if value is None or pd.isna(value):
+        return None
+    text = str(value).strip()
+    if text.isdigit() and len(text) == 14:
+        return text
+    try:
+        number = Decimal(text)
+    except (InvalidOperation, ValueError):
+        return None
+    if not number.is_finite() or number != number.to_integral_value():
+        return None
+    canonical = format(number.to_integral_value(), "f")
+    return canonical if canonical.isdigit() and len(canonical) == 14 else None
+
+
+def _parse_gdelt_date_added(series: pd.Series) -> pd.Series:
+    """Parse GDELT DATEADDED as strict UTC YYYYMMDDHHMMSS."""
+    canonical = series.map(_canonical_gdelt_date_added).astype("string")
+    return pd.to_datetime(canonical, format="%Y%m%d%H%M%S", utc=True, errors="coerce")
+
+
 def load_gdelt_day(day: str | pd.Timestamp) -> pd.DataFrame:
     date = pd.Timestamp(day).strftime("%Y%m%d")
     response = _get(GDELT_DAILY_URL.format(date=date), timeout=120)
@@ -240,7 +264,7 @@ def load_gdelt_day(day: str | pd.Timestamp) -> pd.DataFrame:
             raise ValueError(f"Empty GDELT archive for {date}")
         with archive.open(members[0]) as handle:
             frame = pd.read_csv(handle, sep="\t", header=None, names=GDELT_COLUMNS, dtype=str, low_memory=False)
-    frame["date_added"] = pd.to_datetime(frame["date_added"], format="%Y%m%d%H%M%S", utc=True, errors="coerce")
+    frame["date_added"] = _parse_gdelt_date_added(frame["date_added"])
     frame["sql_date"] = pd.to_datetime(frame["sql_date"], format="%Y%m%d", errors="coerce", utc=True)
     for column in ["goldstein_scale", "num_mentions", "num_sources", "num_articles", "avg_tone"]:
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
