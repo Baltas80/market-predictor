@@ -22,6 +22,7 @@ from market_predictor.research_schema import deduplicate_events, normalize_event
 
 RECOVERY_RETRIES = 4
 RECOVERY_RETRY_BASE_SECONDS = 2
+MAX_RECOVERY_DAYS = 100
 MISSING_COLUMNS = ["date", "source_id", "status", "error_type", "error"]
 EVENT_COLUMNS = [
     "event_id", "event_time", "published_at", "available_at", "source_id",
@@ -104,6 +105,13 @@ def main() -> int:
             gaps.add((str(row["date"]), str(row["source_id"])))
 
     print(f"GDELT recovery: {len(gaps)} unique source-days queued", flush=True)
+    if len(gaps) > MAX_RECOVERY_DAYS:
+        raise RuntimeError(
+            f"Refusing runaway GDELT recovery: {len(gaps)} source-days exceed the safety limit "
+            f"of {MAX_RECOVERY_DAYS}. This indicates an upstream ingestion problem; fix it and rerun "
+            "instead of retrying the entire historical range day-by-day."
+        )
+
     for date, source_id in sorted(gaps):
         if source_id != "GDELT_2_Event_Database":
             remaining.append({
