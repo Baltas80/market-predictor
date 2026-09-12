@@ -34,6 +34,7 @@ sources:
     availability_timezone: UTC
     production_availability_policy: 12:00 UTC on day after file date
     publication_time: unknown
+    deduplication_key: GLOBALEVENTID
     primary_use: geopolitical_and_event_features
     caveat: production_track is GDELT 1.0 daily data; it is not GDELT 2.0
     research_track:
