@@ -1,9 +1,13 @@
 """Download reproducible real data for Market Predictor.
 
+This legacy source-by-source utility remains useful for manual inspection.
+The production historical lockbox uses ``scripts/ingest_historical.py`` plus
+its bounded GDELT workflow.
+
 Examples:
   python scripts/ingest_real_data.py --market-symbol '^spx' --start 2000-01-01
   FRED_API_KEY=... python scripts/ingest_real_data.py --fred-series UNRATE CPIAUCSL
-  python scripts/ingest_real_data.py --gdelt-start 2020-01-01 --gdelt-end 2020-12-31
+  python scripts/ingest_real_data.py --gdelt-start 2015-02-19 --gdelt-end 2015-12-31
   python scripts/ingest_real_data.py --sec
 
 GDELT is downloaded day by day. Raw files and generated inputs belong under
@@ -28,6 +32,8 @@ from market_predictor.data_sources import (
     write_events_csv,
     write_market_csv,
 )
+
+GDELT_START = pd.Timestamp("2015-02-19")
 
 
 def parse_args() -> argparse.Namespace:
@@ -74,6 +80,8 @@ def main() -> None:
             raise SystemExit("--gdelt-end is required with --gdelt-start")
         start = pd.Timestamp(args.gdelt_start)
         end = pd.Timestamp(args.gdelt_end)
+        if start < GDELT_START:
+            raise SystemExit("GDELT 2.0 Event Database starts on 2015-02-19; earlier dates are not valid source-days")
         if end < start:
             raise SystemExit("--gdelt-end must be on or after --gdelt-start")
         for day in pd.date_range(start, end, freq="D"):
@@ -89,9 +97,12 @@ def main() -> None:
         files = sorted(out.glob("gdelt_events_*.csv"))
         if files:
             combined = pd.concat((pd.read_csv(path) for path in files), ignore_index=True)
-            combined["published_at"] = pd.to_datetime(combined["published_at"], utc=True)
-            combined = combined.drop_duplicates("event_id").sort_values("published_at")
-            combined["published_at"] = combined["published_at"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            for column in ("event_time", "published_at", "available_at"):
+                if column in combined.columns:
+                    combined[column] = pd.to_datetime(combined[column], utc=True, errors="coerce")
+            if "available_at" not in combined.columns or combined["available_at"].isna().all():
+                raise SystemExit("GDELT combined data has no valid information-availability timestamps")
+            combined = combined.drop_duplicates("event_id").sort_values("available_at")
             write_events_csv(combined, out / "events_gdelt.csv")
             print(f"gdelt combined: {len(combined):,} events")
 
