@@ -55,6 +55,22 @@ def _staging_fingerprint(staging: Path) -> str:
     return digest.hexdigest()
 
 
+def _assert_required_gdelt_coverage(staging: Path) -> None:
+    """Refuse final evaluation if the required GDELT recovery manifest is non-empty."""
+    path = staging / "raw" / "events_gdelt_missing.csv"
+    if not path.exists() or path.stat().st_size == 0:
+        return
+    missing = pd.read_csv(path)
+    if missing.empty:
+        return
+    required = missing.loc[missing.get("source_id", "") == "GDELT_2_Event_Database"] if "source_id" in missing.columns else missing
+    if not required.empty:
+        raise RuntimeError(
+            f"Final lockbox refused: {len(required)} required GDELT source-days remain missing. "
+            "Resolve the historical ingestion gaps before generating A/B/C or the financial report."
+        )
+
+
 def _prediction_hash(frame: pd.DataFrame) -> str:
     """Hash the complete OOS prediction frame deterministically."""
     records = frame.reset_index().astype(object).where(pd.notna(frame), None).to_dict(orient="records")
@@ -71,6 +87,7 @@ def main() -> None:
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
 
+    _assert_required_gdelt_coverage(staging)
     dataset_hash = _staging_fingerprint(staging)
 
     market = load_market(staging / "normalized" / "market.csv")
