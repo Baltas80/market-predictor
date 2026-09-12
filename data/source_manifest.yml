@@ -1,5 +1,5 @@
-version: 1
-updated_at: 2026-09-05
+version: 2
+updated_at: 2026-09-12
 purpose: point_in_time_market_prediction
 sources:
   market:
@@ -16,17 +16,20 @@ sources:
     point_in_time_rule: select_vintage_known_before_decision_time
     default_conservative_lag_days: 1
     initial_series:
-      - UNRATE
-      - CPIAUCSL
+      - FEDFUNDS
       - DGS10
-      - DFF
-      - T10Y2Y
+      - CPIAUCSL
+      - UNRATE
       - VIXCLS
+    excluded_series:
+      - DFF
     primary_use: macro_features
   events:
     provider: GDELT_Project
     dataset: GDELT_2_Event_Database
     archive: https://data.gdeltproject.org/events/
+    coverage_start: 2015-02-19
+    coverage_end: 2025-12-31
     availability_field: DATEADDED
     availability_timezone: UTC
     deduplication_key: GLOBALEVENTID
@@ -37,10 +40,11 @@ sources:
     dataset: Litigation_Releases
     archive: https://www.sec.gov/enforcement-litigation/litigation-releases
     primary_use: corporate_scandal_and_financial_fraud_events
-    status: planned_secondary_ingestion
+    status: current_RSS_snapshot_not_verified_2000_2025_archive
 rules:
   - preserve_original_source_fields_before_normalization
   - never_replace_information_available_time_with_later_confirmation_time
   - keep_raw_and_normalized_event_ids
   - do_not_use_current_fred_revisions_as_historical_features
   - do_not_commit_large_raw_archives_to_git
+  - final_lockbox_fails_closed_on_unresolved_required_gdelt_source_days
