@@ -17,9 +17,6 @@ import requests
 try:
     from scripts.ingest_gdelt_chunk import load_gdelt_day
 except ModuleNotFoundError:
-    # Support direct execution from the scripts directory as used by the
-    # historical workflow, while keeping the module importable from pytest at
-    # repository root.
     from ingest_gdelt_chunk import load_gdelt_day
 from market_predictor.research_schema import deduplicate_events, normalize_event_sources
 
@@ -50,21 +47,28 @@ def recover_day(day: str) -> tuple[pd.DataFrame | None, dict[str, str] | None]:
     for attempt in range(1, RECOVERY_RETRIES + 1):
         try:
             raw = load_gdelt_day(day)
-            # load_gdelt_day preserves the source export's `global_event_id`.
-            # The ingestion path maps it to the definitive PIT schema before
-            # normalization; recovery must apply the same mapping.
+            if raw.empty:
+                raise ValueError(f"GDELT source-day {day} returned an empty export")
             if "event_id" not in raw and "global_event_id" in raw:
                 raw = raw.rename(columns={"global_event_id": "event_id"})
             if "event_time" not in raw and "sql_date" in raw:
                 raw["event_time"] = raw["sql_date"]
-            if "published_at" not in raw and "date_added" in raw:
-                raw["published_at"] = raw["date_added"]
+            # GDELT DATEADDED is an information-availability timestamp, not
+            # article publication time. Publication therefore remains unknown.
+            if "published_at" not in raw:
+                raw["published_at"] = pd.NaT
             if "available_at" not in raw and "date_added" in raw:
                 raw["available_at"] = raw["date_added"]
             normalized = normalize_event_sources(raw, source_id="GDELT_2_Event_Database")
+            before = len(normalized)
             normalized = normalized.dropna(
                 subset=["event_id", "event_time", "available_at", "severity"]
             ).copy()
+            if before and normalized.empty:
+                raise ValueError(
+                    f"GDELT PIT recovery rejected every row for {day}; "
+                    "required event/availability/severity fields are invalid"
+                )
             return normalized, None
         except (requests.RequestException, TimeoutError, ValueError, zipfile.BadZipFile) as exc:
             last_error = exc
