@@ -1,0 +1,191 @@
+name: Real Historical Lockbox — GDELT 1 Daily
+
+on:
+  push:
+    branches: [fix/gdelt-dual-track]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: real-lockbox-gdelt1
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  stage-base:
+    name: STAGE MARKET + FRED
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip && python -m pip install -e ".[test]"
+      - name: Stage base historical data without events
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: |
+          set +e
+          for attempt in 1 2 3; do
+            python scripts/ingest_historical.py --output-dir data/historical --execute --skip-gdelt --skip-sec
+            status=$?
+            if [ "$status" -eq 0 ]; then exit 0; fi
+            if [ "$attempt" -lt 3 ]; then rm -rf data/historical; sleep 90; fi
+          done
+          exit "$status"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: historical-base-gdelt1-${{ github.sha }}
+          path: data/historical/
+          if-no-files-found: error
+          retention-days: 7
+
+  prepare:
+    name: PREPARE 28-DAY MATRIX
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: matrix
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import datetime, json
+          start=datetime.date(2015,2,19); end=datetime.date(2025,12,31); cur=start; rows=[]; n=1
+          while cur<=end:
+              e=min(cur+datetime.timedelta(days=27),end)
+              rows.append({'chunk':n,'start':cur.isoformat(),'end':e.isoformat()})
+              cur=e+datetime.timedelta(days=1); n+=1
+          print('matrix='+json.dumps({'include':rows},separators=(',',':')))
+          PY
+
+  gdelt:
+    name: GDELT 1.0 ${{ matrix.start }} → ${{ matrix.end }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip && python -m pip install -e ".[test]"
+      - name: Download daily GDELT 1.0 chunk
+        run: |
+          python scripts/ingest_gdelt_daily_chunk.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --output "data/gdelt_chunks/gdelt_${{ matrix.chunk }}_${{ matrix.start }}_${{ matrix.end }}.csv" \
+            --missing-output "data/gdelt_chunks/gdelt_${{ matrix.chunk }}_missing.csv" \
+            --checkpoint-dir "data/gdelt_chunks/gdelt_${{ matrix.chunk }}_${{ matrix.start }}_${{ matrix.end }}_days"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: gdelt1-${{ matrix.chunk }}-${{ matrix.start }}-${{ matrix.end }}
+          path: data/gdelt_chunks/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  recover:
+    name: RECOVER GDELT 1.0 GAPS
+    needs: gdelt
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip && python -m pip install -e ".[test]"
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: gdelt1-*
+          path: data/gdelt_chunks
+          merge-multiple: true
+      - run: |
+          python scripts/recover_gdelt_daily_gaps.py \
+            --chunks data/gdelt_chunks \
+            --output data/gdelt_chunks/gdelt_recovered.csv \
+            --remaining-output data/gdelt_chunks/gdelt_recovery_missing.csv
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gdelt1-recovery-${{ github.sha }}
+          path: |
+            data/gdelt_chunks/gdelt_recovered.csv
+            data/gdelt_chunks/gdelt_recovery_missing.csv
+          if-no-files-found: error
+          retention-days: 7
+
+  finalize:
+    name: ASSEMBLE + HISTORICAL GATE
+    needs: [stage-base, recover]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip && python -m pip install -e ".[test]"
+      - uses: actions/download-artifact@v8
+        with:
+          name: historical-base-gdelt1-${{ github.sha }}
+          path: data/historical
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: gdelt1-*
+          path: data/gdelt_chunks
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: gdelt1-recovery-${{ github.sha }}
+          path: data/gdelt_chunks
+      - run: python scripts/finalize_historical_staging.py --staging data/historical --chunks data/gdelt_chunks
+      - uses: actions/upload-artifact@v7
+        with:
+          name: historical-final-gdelt1-${{ github.sha }}
+          path: data/historical/
+          if-no-files-found: error
+          retention-days: 30
+
+  lockbox:
+    name: REAL DATA → PIT → A/B/C → LOCKBOX → REPORT
+    needs: finalize
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip && python -m pip install -e ".[test]"
+      - uses: actions/download-artifact@v8
+        with:
+          name: historical-final-gdelt1-${{ github.sha }}
+          path: data/historical
+      - run: python scripts/run_real_lockbox_a.py --staging data/historical --output data/results
+      - run: python -m pytest -q
+      - uses: actions/upload-artifact@v7
+        with:
+          name: real-lockbox-results-gdelt1-${{ github.sha }}
+          path: |
+            data/results/
+            data/historical/staging_result.json
+            data/historical/source_manifest.json
+          if-no-files-found: error
+          retention-days: 30
