@@ -49,6 +49,27 @@ GDELT_EXPORT_COLUMNS_58 = [
 ]
 
 
+def _parse_gdelt_date_added(series: pd.Series) -> pd.Series:
+    """Parse GDELT DATEADDED without losing integer-like timestamp encodings.
+
+    GDELT specifies DATEADDED as a UTC ``YYYYMMDDHHMMSS`` integer. Historical
+    CSV readers can surface that integer as a plain string, a decimal-looking
+    string, or scientific notation depending on the source/parser. Normalize
+    those equivalent representations before applying the strict timestamp
+    format. Invalid values remain NaT and are rejected by the PIT gate.
+    """
+    values = series.astype("string").str.strip()
+    numeric = pd.to_numeric(values, errors="coerce")
+    numeric_text = numeric.round().astype("Int64").astype("string")
+    canonical = values.where(values.str.fullmatch(r"\d{14}"), numeric_text)
+    return pd.to_datetime(
+        canonical,
+        format="%Y%m%d%H%M%S",
+        utc=True,
+        errors="coerce",
+    )
+
+
 def load_gdelt_day(day: str | pd.Timestamp) -> pd.DataFrame:
     """Load and normalize one GDELT 2.0 daily event export."""
     date = pd.Timestamp(day).strftime("%Y%m%d")
@@ -90,17 +111,12 @@ def load_gdelt_day(day: str | pd.Timestamp) -> pd.DataFrame:
         if column not in frame:
             frame[column] = pd.NA
     frame = frame[GDELT_EXPORT_COLUMNS_61]
-    frame["date_added"] = pd.to_datetime(
-        frame["date_added"].astype("string").str.strip(),
-        format="%Y%m%d%H%M%S",
-        utc=True,
-        errors="coerce",
-    )
+    frame["date_added"] = _parse_gdelt_date_added(frame["date_added"])
     frame["sql_date"] = pd.to_datetime(
         frame["sql_date"].astype("string").str.strip(),
         format="%Y%m%d",
-        errors="coerce",
         utc=True,
+        errors="coerce",
     )
     for column in ["goldstein_scale", "num_mentions", "num_sources", "num_articles", "avg_tone"]:
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
@@ -176,7 +192,10 @@ def fetch_gdelt_chunk(start: str, end: str, checkpoint_dir: Path | None = None) 
                 if "event_id" not in raw_day and "global_event_id" in raw_day:
                     raw_day = raw_day.rename(columns={"global_event_id": "event_id"})
                 raw_day["event_time"] = raw_day["sql_date"]
-                raw_day["published_at"] = raw_day["date_added"]
+                # GDELT DATEADDED is an information-availability timestamp,
+                # not an article publication timestamp. Keep publication
+                # unknown rather than conflating the two clocks.
+                raw_day["published_at"] = pd.NaT
                 raw_day["available_at"] = raw_day["date_added"]
                 normalized = normalize_event_sources(raw_day, source_id="GDELT_2_Event_Database")
                 before = len(normalized)
