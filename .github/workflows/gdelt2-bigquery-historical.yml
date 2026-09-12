@@ -19,6 +19,44 @@ env:
   GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
 
 jobs:
+  stage-base:
+    name: STAGE MARKET + FRED
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install package
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[test]"
+      - name: Stage base historical data without GDELT or SEC RSS
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: |
+          set +e
+          for attempt in 1 2 3; do
+            echo "FRED/base staging attempt ${attempt}/3"
+            python scripts/ingest_historical.py --output-dir data/historical --execute --skip-gdelt --skip-sec
+            status=$?
+            if [ "$status" -eq 0 ]; then exit 0; fi
+            if [ "$attempt" -lt 3 ]; then
+              rm -rf data/historical
+              sleep 90
+            fi
+          done
+          exit "$status"
+      - name: Upload base staging
+        uses: actions/upload-artifact@v7
+        with:
+          name: gdelt2-base-${{ github.sha }}
+          path: data/historical/
+          if-no-files-found: error
+          retention-days: 30
+
   prepare-matrix:
     name: PREPARE 28-DAY GDELT2 MATRIX
     runs-on: ubuntu-24.04
@@ -91,8 +129,8 @@ jobs:
           compression-level: 0
 
   finalize:
-    name: ASSEMBLE GDELT2 + COVERAGE GATE
-    needs: gdelt2-chunks
+    name: ASSEMBLE + HISTORICAL GATE
+    needs: [stage-base, gdelt2-chunks]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -105,24 +143,66 @@ jobs:
           cache: pip
       - name: Install package
         run: python -m pip install --upgrade pip && python -m pip install -e ".[test]"
-      - name: Download all immutable GDELT2 chunks
+      - name: Download base staging
         uses: actions/download-artifact@v8
         with:
-          pattern: gdelt2-*
+          name: gdelt2-base-${{ github.sha }}
+          path: data/historical
+      - name: Download all GDELT2 chunks
+        uses: actions/download-artifact@v8
+        with:
+          pattern: gdelt2-*-*-*
           path: data/gdelt2_chunks
           merge-multiple: true
-      - name: Finalize and validate complete availability coverage
+      - name: Finalize GDELT2 staging and historical gate
         run: |
           python scripts/finalize_gdelt2_bigquery.py \
             --chunks data/gdelt2_chunks \
             --output data/historical/normalized/events_gdelt.csv.gz
-      - name: Upload assembled GDELT2 staging
+          python scripts/finalize_historical_staging_gdelt2.py \
+            --staging data/historical \
+            --events data/historical/normalized/events_gdelt.csv.gz
+      - name: Upload final historical staging
         uses: actions/upload-artifact@v7
         with:
-          name: gdelt2-historical-${{ github.sha }}
+          name: gdelt2-historical-final-${{ github.sha }}
+          path: data/historical/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  real-lockbox:
+    name: REAL DATA → PIT → A/B/C → LOCKBOX → FINANCIAL REPORT
+    needs: finalize
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install package
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[test]"
+      - name: Download final historical staging
+        uses: actions/download-artifact@v8
+        with:
+          name: gdelt2-historical-final-${{ github.sha }}
+          path: data/historical
+      - name: Run frozen A/B/C lockbox and financial evaluation
+        run: python scripts/run_real_lockbox.py --staging data/historical --output data/results
+      - name: Run regression suite
+        run: python -m pytest -q
+      - name: Upload real-data results
+        uses: actions/upload-artifact@v7
+        with:
+          name: gdelt2-real-lockbox-results-${{ github.sha }}
           path: |
-            data/historical/normalized/events_gdelt.csv.gz
-            data/historical/raw/events_gdelt_missing.csv
+            data/results/
+            data/historical/staging_result.json
+            data/historical/source_manifest.json
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
