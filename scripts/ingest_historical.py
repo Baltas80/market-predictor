@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 
 from market_predictor.historical_adapters import FRED_SERIES
-from market_predictor.historical_coverage import coverage_dict, DATASET_START, DATASET_END
+from market_predictor.historical_coverage import coverage_dict, DATASET_START, DATASET_END, GDELT_SOURCE
 from market_predictor.historical_staging import STAGING_VERSION, stage_historical
 
 
@@ -40,7 +40,7 @@ def build_plan(output_dir: Path) -> dict[str, object]:
         "adapters": {
             "market": "Stooq SPX daily",
             "macro": f"FRED {', '.join(FRED_SERIES)} realtime vintages",
-            "events": "GDELT daily exports from 2015-01-01; SEC litigation RSS snapshot",
+            "events": f"GDELT daily exports from {GDELT_SOURCE.start.isoformat()}; SEC litigation RSS snapshot",
         },
         "stages": [{"name": name, "status": "blocked"} for name in STAGES],
         "execution_policy": {
