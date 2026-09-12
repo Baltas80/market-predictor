@@ -16,7 +16,7 @@ def test_parse_gdelt_date_added_accepts_canonical_integer_strings() -> None:
     ]
 
 
-def test_parse_gdelt_date_added_normalizes_numeric_like_encodings() -> None:
+def test_parse_gdelt_date_added_normalizes_exact_numeric_like_encodings() -> None:
     values = pd.Series(["20150219000000.0", "2.0150219153e13"])
 
     result = _parse_gdelt_date_added(values)
@@ -25,6 +25,14 @@ def test_parse_gdelt_date_added_normalizes_numeric_like_encodings() -> None:
         pd.Timestamp("2015-02-19T00:00:00Z"),
         pd.Timestamp("2015-02-19T15:30:00Z"),
     ]
+
+
+def test_parse_gdelt_date_added_rejects_non_integral_numeric_values() -> None:
+    values = pd.Series(["20150219000000.9", "2.01502191531e13.5"])
+
+    result = _parse_gdelt_date_added(values)
+
+    assert result.isna().all()
 
 
 def test_parse_gdelt_date_added_rejects_invalid_values_without_imputation() -> None:
