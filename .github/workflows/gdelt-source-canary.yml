@@ -38,7 +38,7 @@ jobs:
                   with archive.open(names[0]) as raw:
                       sample = []
                       for index, line in enumerate(raw):
-                          fields = line.decode("utf-8", errors="replace").rstrip("\\r\\n").split("\\t")
+                          fields = line.decode("utf-8", errors="replace").rstrip("\\r\\n").split(chr(9))
                           sample.append(fields)
                           if index >= 999:
                               break
@@ -52,7 +52,7 @@ jobs:
                   date_like = []
                   for offset, value in enumerate(row[-8:], start=max(0, width - 8)):
                       text = value.strip()
-                      if re.fullmatch(r"\\d{14}", text):
+                      if re.fullmatch(r"\\d{8}", text) or re.fullmatch(r"\\d{14}", text):
                           date_like.append((offset, text))
-                  print(f"width={width} 14digit_tail_candidates={date_like}")
+                  print(f"width={width} date_tail_candidates={date_like}")
           PY
