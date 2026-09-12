@@ -5,8 +5,8 @@ The 2000-2025 staging executor is `scripts/ingest_historical.py` and is dry-run 
 ## Source adapters
 
 - **Market:** Stooq SPX daily bars, represented at the modeled cash-session close in UTC.
-- **Macro:** FRED `DFF`, `FEDFUNDS`, `DGS10`, `CPIAUCSL`, `UNRATE`, `VIXCLS`, retaining realtime vintages.
-- **Events:** GDELT daily event exports from 2015-01-01, retaining `DATEADDED` as an availability proxy.
+- **Macro:** FRED `FEDFUNDS`, `DGS10`, `CPIAUCSL`, `UNRATE`, `VIXCLS`, retaining realtime vintages. `DFF` is intentionally excluded from the strict PIT staging set.
+- **Events:** GDELT 2.0 daily event exports from 2015-02-19, retaining `DATEADDED` as an availability proxy; publication time remains unknown unless a source supplies it.
 - **SEC:** Litigation Releases RSS snapshot. This is not a verified 2000-2025 archive and is therefore recorded as a source limitation.
 
 ## Staging phases
@@ -15,7 +15,7 @@ The 2000-2025 staging executor is `scripts/ingest_historical.py` and is dry-run 
 2. `raw` — persist deterministic source snapshots.
 3. `hash` — create source manifests with deterministic hashes and coverage.
 4. `normalize` — persist the definitive market/macro/event schemas.
-5. `pit` — preserve and validate information-availability rules, including FRED vintages.
+5. `pit` — preserve and validate information-availability rules, including FRED vintages and GDELT `DATEADDED`.
 6. `historical_gate` — fail closed unless the complete staged inputs pass schema, session, PIT and manifest validation.
 7. `dataset` — only after the gate passes is the staged dataset marked admissible.
 
@@ -28,3 +28,5 @@ Each staging output records `STAGING_VERSION`, source coverage, row counts, SHA-
 `FRED_API_KEY` must be supplied through the environment for real execution. The default command performs no network retrieval.
 
 For a full historical run, use `--execute`. GDELT retrieval is intentionally explicit because it requires one daily export per calendar day over its available historical range. `--skip-gdelt` and `--skip-sec` are available for staged source-by-source validation and do not imply complete event coverage.
+
+The final lockbox is fail-closed on unresolved required GDELT source-days. Missing days are never imputed or silently tolerated.
