@@ -1,0 +1,63 @@
+name: GDELT 2 Acquisition — parallel research track
+
+on:
+  push:
+    branches: [fix/gdelt-dual-track]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  acquire:
+    name: GDELT 2.0 15-minute canary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Download official master lists
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data/gdelt2
+          curl -fsSL --retry 4 --retry-delay 3 http://data.gdeltproject.org/gdeltv2/masterfilelist.txt -o data/gdelt2/masterfilelist.txt
+          curl -fsSL --retry 4 --retry-delay 3 http://data.gdeltproject.org/gdeltv2/masterfilelist-translation.txt -o data/gdelt2/masterfilelist-translation.txt
+      - name: Select representative historical 15-minute event files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data/gdelt2/raw
+          grep '20150219\(0000\|0015\|0030\|0045\|1200\|1215\|1230\|1245\)00.export.CSV.zip$' data/gdelt2/masterfilelist.txt > data/gdelt2/canary_urls.txt || true
+          grep '20150219\(0000\|0015\|0030\|0045\|1200\|1215\|1230\|1245\)00.translation.export.CSV.zip$' data/gdelt2/masterfilelist-translation.txt >> data/gdelt2/canary_urls.txt || true
+          test -s data/gdelt2/canary_urls.txt
+          awk '{print $3}' data/gdelt2/canary_urls.txt | sort -u > data/gdelt2/canary_urls_only.txt
+          while read -r url; do
+            curl -fsSL --retry 4 --retry-delay 2 -O --output-dir data/gdelt2/raw "$url"
+          done < data/gdelt2/canary_urls_only.txt
+          wc -l data/gdelt2/canary_urls_only.txt
+          du -sh data/gdelt2/raw
+      - name: Validate 61-field GDELT 2 schema and DATEADDED
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import zipfile
+          import re
+          files = sorted(Path('data/gdelt2/raw').glob('*.zip'))
+          assert files, 'No GDELT 2 canary archives downloaded'
+          for path in files:
+              with zipfile.ZipFile(path) as zf:
+                  with zf.open(zf.namelist()[0]) as handle:
+                      line = handle.readline().decode('utf-8', errors='replace').rstrip('\r\n')
+              fields = line.split('\t')
+              assert len(fields) == 61, (path.name, len(fields))
+              assert re.fullmatch(r'\d{14}', fields[-2].strip()), (path.name, fields[-2])
+              print(path.name, 'fields=', len(fields), 'DATEADDED=', fields[-2].strip())
+          PY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gdelt2-canary-${{ github.sha }}
+          path: data/gdelt2/
+          if-no-files-found: error
+          retention-days: 30
