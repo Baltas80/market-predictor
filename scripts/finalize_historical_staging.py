@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from market_predictor.historical_coverage import DATASET_START, DATASET_END
+from market_predictor.historical_coverage import DATASET_START, DATASET_END, GDELT_SOURCE
 from market_predictor.historical_ingestion import build_source_manifest, write_source_manifest
 from market_predictor.historical_gate import validate_historical_dataset
 from market_predictor.research_schema import deduplicate_events
 
-STAGING_VERSION = "2026-09-09-staging-weekly-gdelt-with-gap-manifest-v4"
+STAGING_VERSION = "2026-09-09-staging-weekly-gdelt-with-gap-manifest-v5"
 EVENT_COLUMNS = [
     "event_id", "event_time", "published_at", "available_at", "source_id",
     "category", "severity", "country", "entity", "sector", "duration_days",
@@ -80,6 +80,20 @@ def main() -> int:
     missing_path = raw / "events_gdelt_missing.csv"
     missing.to_csv(missing_path, index=False, lineterminator="\n")
 
+    # GDELT is a required PIT source for experiment C. A final lockbox run is
+    # not admissible while any source-day in the declared GDELT coverage range
+    # remains unresolved. Missing days are never silently tolerated or imputed.
+    gdelt_missing = missing.loc[missing["source_id"] == "GDELT_2_Event_Database"].copy()
+    if not gdelt_missing.empty:
+        dates = sorted(pd.to_datetime(gdelt_missing["date"], errors="coerce").dropna().dt.date.unique())
+        preview = ", ".join(day.isoformat() for day in dates[:10])
+        suffix = " ..." if len(dates) > 10 else ""
+        raise RuntimeError(
+            f"Historical staging is not admissible: {len(gdelt_missing)} GDELT source-days remain missing "
+            f"within required coverage {GDELT_SOURCE.start.isoformat()} -> {GDELT_SOURCE.end.isoformat()}; "
+            f"examples: {preview}{suffix}. No final lockbox or financial report will run."
+        )
+
     manifests = []
     for source_id, source_type, path, uri, policy in (
         ("Stooq_SPX", "market", normalized / "market.csv", "https://stooq.com/q/d/l/", "daily cash-session close represented in UTC"),
@@ -105,11 +119,9 @@ def main() -> int:
 
     gate = validate_historical_dataset(market, macro=macro, events=events, manifests=manifests)
     limitations = [
-        "GDELT historical event coverage begins in 2015; it is not a 2000-2014 event source",
+        "GDELT historical event coverage begins in 2015-02-19; it is not a 2000-2015-02-18 event source",
         "SEC adapter is an RSS snapshot and does not provide a verified 2000-2025 archive",
     ]
-    if not missing.empty:
-        limitations.append(f"GDELT has {len(missing)} source-days currently missing; they are recorded for later recovery and are never imputed")
     result = {
         "status": "admissible_with_source_limits",
         "staging_version": STAGING_VERSION,
@@ -118,7 +130,7 @@ def main() -> int:
         "historical_gate": gate,
         "gdelt_chunk_count": len(data_chunk_paths),
         "gdelt_rows": len(gdelt),
-        "gdelt_missing_day_count": len(missing),
+        "gdelt_missing_day_count": 0,
         "gdelt_missing_manifest": str(missing_path),
         "limitations": limitations,
         "manifest_count": len(manifests),
