@@ -8,9 +8,10 @@ import pandas as pd
 
 from .event_schema import EventCategory, MarketEvent
 
-REQUIRED_COLUMNS = {"event_id", "category", "published_at", "severity"}
+REQUIRED_COLUMNS = {"event_id", "category", "severity"}
 OPTIONAL_COLUMNS = {
     "event_time",
+    "published_at",
     "available_at",
     "country",
     "entity",
@@ -22,17 +23,18 @@ OPTIONAL_COLUMNS = {
 
 
 def load_events_csv(path: str | Path) -> list[MarketEvent]:
-    """Load events from CSV while preserving occurrence/publication/availability times.
+    """Load events while keeping publication and availability semantically distinct.
 
-    Required columns are ``event_id``, ``category``, ``published_at`` and
-    ``severity``. If ``event_time`` and/or ``available_at`` are present they
-    are passed through unchanged so downstream feature generation can enforce
-    the information cutoff. Duplicate event IDs are rejected.
+    Every event must provide either ``available_at`` or ``published_at``. A
+    source may legitimately omit publication time when it exposes an explicit
+    information-availability timestamp (for example, GDELT DATEADDED).
     """
     frame = pd.read_csv(path)
     missing = REQUIRED_COLUMNS - set(frame.columns)
     if missing:
         raise ValueError(f"Missing event columns: {sorted(missing)}")
+    if not ({"published_at", "available_at"} & set(frame.columns)):
+        raise ValueError("Event CSV requires published_at or available_at")
     if frame["event_id"].duplicated().any():
         duplicates = frame.loc[frame["event_id"].duplicated(), "event_id"].tolist()
         raise ValueError(f"Duplicate event_id values: {duplicates}")
@@ -40,17 +42,19 @@ def load_events_csv(path: str | Path) -> list[MarketEvent]:
     events: list[MarketEvent] = []
     for row_number, row in frame.iterrows():
         try:
+            event_id = _required_text(row.get("event_id"), "event_id")
             category = EventCategory(str(row["category"]))
-            published_at = pd.Timestamp(row["published_at"])
-            if pd.isna(published_at):
-                raise ValueError("published_at is missing")
+            published_at = _optional_timestamp(row.get("published_at"))
+            available_at = _optional_timestamp(row.get("available_at"))
+            if published_at is None and available_at is None:
+                raise ValueError("published_at and available_at are both missing")
             event = MarketEvent(
-                event_id=str(row["event_id"]),
+                event_id=event_id,
                 category=category,
                 published_at=published_at,
                 severity=float(row["severity"]),
                 event_time=_optional_timestamp(row.get("event_time")),
-                available_at=_optional_timestamp(row.get("available_at")),
+                available_at=available_at,
                 country=_optional_text(row.get("country")),
                 entity=_optional_text(row.get("entity")),
                 sector=_optional_text(row.get("sector")),
@@ -62,7 +66,13 @@ def load_events_csv(path: str | Path) -> list[MarketEvent]:
             raise ValueError(f"Invalid event at CSV row {row_number + 2}: {exc}") from exc
         events.append(event)
 
-    return sorted(events, key=lambda event: pd.Timestamp(event.published_at))
+    return sorted(events, key=lambda event: pd.Timestamp(event.available_at))
+
+
+def _required_text(value: object, name: str) -> str:
+    if value is None or pd.isna(value) or not str(value).strip():
+        raise ValueError(f"{name} is missing")
+    return str(value)
 
 
 def _optional_timestamp(value: object) -> pd.Timestamp | None:
