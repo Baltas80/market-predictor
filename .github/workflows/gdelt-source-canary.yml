@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - fix/gdelt-source-canary
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -17,7 +20,6 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import csv
           import io
           import re
           import urllib.request
@@ -44,7 +46,7 @@ jobs:
               for fields in sample:
                   counts[len(fields)] = counts.get(len(fields), 0) + 1
               print(f"field_counts_first_1000={counts}")
-              for width, n in sorted(counts.items()):
+              for width in sorted(counts):
                   row = next(fields for fields in sample if len(fields) == width)
                   print(f"width={width} tail={row[-6:]}")
                   date_like = []
