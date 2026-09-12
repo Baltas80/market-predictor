@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import timedelta
+from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from pathlib import Path
 import time
@@ -23,6 +24,7 @@ from market_predictor.research_schema import deduplicate_events, normalize_event
 
 GDELT_DAY_RETRIES = 4
 GDELT_RETRY_BASE_SECONDS = 2
+GDELT_CHECKPOINT_VERSION = "gdelt-pit-v2"
 
 GDELT_EXPORT_COLUMNS_61 = [
     "global_event_id", "sql_date", "month_year", "year", "fraction_date",
@@ -49,19 +51,26 @@ GDELT_EXPORT_COLUMNS_58 = [
 ]
 
 
-def _parse_gdelt_date_added(series: pd.Series) -> pd.Series:
-    """Parse GDELT DATEADDED without losing integer-like timestamp encodings.
+def _canonical_gdelt_date_added(value: object) -> str | None:
+    """Canonicalize exact integer-like DATEADDED encodings without rounding."""
+    if value is None or pd.isna(value):
+        return None
+    text = str(value).strip()
+    if text.isdigit() and len(text) == 14:
+        return text
+    try:
+        number = Decimal(text)
+    except (InvalidOperation, ValueError):
+        return None
+    if not number.is_finite() or number != number.to_integral_value():
+        return None
+    canonical = format(number.to_integral_value(), "f")
+    return canonical if canonical.isdigit() and len(canonical) == 14 else None
 
-    GDELT specifies DATEADDED as a UTC ``YYYYMMDDHHMMSS`` integer. Historical
-    CSV readers can surface that integer as a plain string, a decimal-looking
-    string, or scientific notation depending on the source/parser. Normalize
-    those equivalent representations before applying the strict timestamp
-    format. Invalid values remain NaT and are rejected by the PIT gate.
-    """
-    values = series.astype("string").str.strip()
-    numeric = pd.to_numeric(values, errors="coerce")
-    numeric_text = numeric.round().astype("Int64").astype("string")
-    canonical = values.where(values.str.fullmatch(r"\d{14}"), numeric_text)
+
+def _parse_gdelt_date_added(series: pd.Series) -> pd.Series:
+    """Parse GDELT DATEADDED as strict UTC YYYYMMDDHHMMSS."""
+    canonical = series.map(_canonical_gdelt_date_added).astype("string")
     return pd.to_datetime(
         canonical,
         format="%Y%m%d%H%M%S",
@@ -140,9 +149,17 @@ def _read_checkpoint(path: Path) -> pd.DataFrame:
     frame = pd.read_csv(path)
     if frame.empty:
         raise ValueError("GDELT checkpoint is empty; redownloading")
+    if "checkpoint_version" not in frame.columns or frame["checkpoint_version"].ne(GDELT_CHECKPOINT_VERSION).any():
+        raise ValueError("GDELT checkpoint schema/version is stale; redownloading")
+    frame = frame.drop(columns=["checkpoint_version"])
     for column in ("event_time", "published_at", "available_at"):
         if column in frame:
             frame[column] = pd.to_datetime(frame[column], utc=True, errors="coerce")
+    required = ["event_id", "event_time", "available_at", "severity"]
+    if not set(required).issubset(frame.columns):
+        raise ValueError("GDELT checkpoint lacks required PIT columns; redownloading")
+    if frame[required].isna().any().any():
+        raise ValueError("GDELT checkpoint contains invalid PIT fields; redownloading")
     return frame
 
 
@@ -189,12 +206,11 @@ def fetch_gdelt_chunk(start: str, end: str, checkpoint_dir: Path | None = None) 
         for attempt in range(1, GDELT_DAY_RETRIES + 1):
             try:
                 raw_day = load_gdelt_day(current)
+                if raw_day.empty:
+                    raise ValueError(f"GDELT source-day {current.isoformat()} returned an empty export")
                 if "event_id" not in raw_day and "global_event_id" in raw_day:
                     raw_day = raw_day.rename(columns={"global_event_id": "event_id"})
                 raw_day["event_time"] = raw_day["sql_date"]
-                # GDELT DATEADDED is an information-availability timestamp,
-                # not an article publication timestamp. Keep publication
-                # unknown rather than conflating the two clocks.
                 raw_day["published_at"] = pd.NaT
                 raw_day["available_at"] = raw_day["date_added"]
                 normalized = normalize_event_sources(raw_day, source_id="GDELT_2_Event_Database")
@@ -210,12 +226,14 @@ def fetch_gdelt_chunk(start: str, end: str, checkpoint_dir: Path | None = None) 
                         "GDELT PIT normalization rejected every row; "
                         + ", ".join(f"{column}_nulls={count}" for column, count in invalid_counts.items())
                     )
+                normalized["checkpoint_version"] = GDELT_CHECKPOINT_VERSION
                 normalized.to_csv(
                     checkpoint,
                     index=False,
                     lineterminator="\n",
                     date_format="%Y-%m-%dT%H:%M:%S%z",
                 )
+                normalized = normalized.drop(columns=["checkpoint_version"])
                 frames.append(normalized)
                 last_error = None
                 print(
