@@ -3,7 +3,7 @@ name: GDELT 2.0 BigQuery Historical Acquisition
 on:
   workflow_dispatch:
   push:
-    branches: [feat/gdelt2-primary]
+    branches: [feature/gdelt2-bigquery]
 
 permissions:
   contents: read
