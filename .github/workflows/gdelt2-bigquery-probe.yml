@@ -1,0 +1,46 @@
+name: GDELT 2 BigQuery Probe
+
+on:
+  push:
+    branches: [feature/gdelt2-bigquery]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Authenticate + partition-pruned query
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip && python -m pip install -e ".[gcp,test]"
+      - name: Write temporary service-account key
+        env:
+          GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$GCP_SERVICE_ACCOUNT_JSON"
+          printf '%s' "$GCP_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/gcp-service-account.json"
+          python - <<'PY'
+          import json, os
+          p = os.path.join(os.environ['RUNNER_TEMP'], 'gcp-service-account.json')
+          with open(p, encoding='utf-8') as f:
+              data = json.load(f)
+          assert data.get('type') == 'service_account'
+          assert data.get('project_id')
+          print('service_account_key_format=valid')
+          PY
+      - name: Query GDELT 2.0 partitioned table
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/gcp-service-account.json
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$GCP_PROJECT_ID"
+          python scripts/probe_gdelt2_bigquery.py --project "$GCP_PROJECT_ID" --partition-date 2015-02-19
