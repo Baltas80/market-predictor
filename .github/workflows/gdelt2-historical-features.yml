@@ -1,6 +1,8 @@
 name: GDELT 2 Historical BigQuery Features
 
 on:
+  push:
+    branches: [feature/gdelt2-bigquery]
   workflow_dispatch:
 
 permissions:
