@@ -1,26 +1,17 @@
-"""Build PIT-safe daily GDELT 2.0 features from the public BigQuery table.
-
-The query is partition-pruned and aggregates the 15-minute GDELT stream before
-Python applies the exact NYSE session-close cutoff and seven-day decay. This
-avoids materializing millions of raw event rows while retaining all qualifying
-GDELT events in the historical feature calculation.
-"""
+"""Build PIT-safe daily GDELT 2.0 features from public BigQuery data."""
 from __future__ import annotations
 
 import argparse
 import json
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 from google.cloud import bigquery
 
 TABLE = "gdelt-bq.gdeltv2.events_partitioned"
-MAX_BYTES_BILLED = 100_000_000_000  # 100 GB hard ceiling for the full historical query.
+MAX_BYTES_BILLED = 100_000_000_000
 HALF_LIFE_DAYS = 7.0
-UTC = ZoneInfo("UTC")
-NY = ZoneInfo("America/New_York")
 CATEGORIES = (
     "war_conflict", "political_crisis", "corruption", "corporate_scandal",
     "political_scandal", "financial_fraud", "sanctions", "regulation",
@@ -31,30 +22,36 @@ CATEGORIES = (
 
 def _category_case() -> str:
     return """CASE
-        WHEN CAST(EventCode AS STRING) = '163' OR CAST(EventCode AS STRING) = '0163' THEN 'sanctions'
-        WHEN LPAD(CAST(EventRootCode AS STRING), 2, '0') = '14' THEN 'social_unrest'
-        WHEN LPAD(CAST(EventRootCode AS STRING), 2, '0') IN ('18','19','20') THEN
-          CASE WHEN LPAD(CAST(EventRootCode AS STRING), 2, '0') = '20'
-                    AND REGEXP_CONTAINS(LOWER(CONCAT(COALESCE(Actor1Name,''),' ',COALESCE(Actor2Name,''))), r'terror|militant|extremist')
-               THEN 'terrorism' ELSE 'war_conflict' END
-        WHEN LPAD(CAST(EventRootCode AS STRING), 2, '0') IN ('16','17','09','10','11','12','13','15') THEN 'political_crisis'
-        ELSE 'political_crisis'
-      END"""
+      WHEN CAST(EventCode AS STRING) IN ('163','0163') THEN 'sanctions'
+      WHEN LPAD(CAST(EventRootCode AS STRING), 2, '0') = '14' THEN 'social_unrest'
+      WHEN LPAD(CAST(EventRootCode AS STRING), 2, '0') IN ('18','19','20') THEN
+        CASE WHEN LPAD(CAST(EventRootCode AS STRING), 2, '0') = '20'
+          AND REGEXP_CONTAINS(LOWER(CONCAT(COALESCE(Actor1Name,''),' ',COALESCE(Actor2Name,''))), r'terror|militant|extremist')
+          THEN 'terrorism' ELSE 'war_conflict' END
+      WHEN LPAD(CAST(EventRootCode AS STRING), 2, '0') IN ('16','17','09','10','11','12','13','15') THEN 'political_crisis'
+      ELSE 'political_crisis' END"""
 
 
-def _query(start: str, end: str) -> str:
+def _query() -> str:
     category = _category_case()
     return f"""
+      WITH base AS (
+        SELECT
+          PARSE_TIMESTAMP('%Y%m%d%H%M%S', CAST(DATEADDED AS STRING)) AS added_at,
+          {category} AS category,
+          LEAST(1.0, 0.7 * LEAST(ABS(COALESCE(GoldsteinScale, 0.0)), 10.0) / 10.0
+            + 0.3 * SAFE_DIVIDE(GREATEST(COALESCE(NumSources, 0), 0), GREATEST(COALESCE(NumSources, 0), 0) + 5.0)) AS severity
+        FROM `{TABLE}`
+        WHERE _PARTITIONDATE BETWEEN @start_date AND @end_date
+          AND DATE(PARSE_TIMESTAMP('%Y%m%d%H%M%S', CAST(DATEADDED AS STRING))) BETWEEN @start_date AND @end_date
+          AND DATEADDED IS NOT NULL
+      )
       SELECT
-        TIMESTAMP_SECONDS(DIV(UNIX_SECONDS(DATEADDED), 900) * 900 + 899) AS available_bucket_end,
-        {category} AS category,
-        SUM(LEAST(1.0, 0.7 * LEAST(ABS(COALESCE(GoldsteinScale, 0.0)), 10.0) / 10.0
-          + 0.3 * SAFE_DIVIDE(GREATEST(COALESCE(NumSources, 0), 0), GREATEST(COALESCE(NumSources, 0), 0) + 5.0))) AS severity_sum,
+        TIMESTAMP_SECONDS(DIV(UNIX_SECONDS(added_at), 900) * 900 + 899) AS available_bucket_end,
+        category,
+        SUM(severity) AS severity_sum,
         COUNT(*) AS event_count
-      FROM `{TABLE}`
-      WHERE _PARTITIONDATE BETWEEN @start_date AND @end_date
-        AND DATE(DATEADDED) BETWEEN @start_date AND @end_date
-        AND DATEADDED IS NOT NULL
+      FROM base
       GROUP BY available_bucket_end, category
       ORDER BY available_bucket_end, category
     """
@@ -71,33 +68,32 @@ def build_features(frame: pd.DataFrame, closes: pd.DatetimeIndex) -> pd.DataFram
     frame["severity_sum"] = pd.to_numeric(frame["severity_sum"], errors="coerce").fillna(0.0)
     frame["event_count"] = pd.to_numeric(frame["event_count"], errors="coerce").fillna(0.0)
     frame = frame.sort_values("available_bucket_end")
-
-    rows = []
-    decay_k = np.log(2.0) / HALF_LIFE_DAYS
-    for close in closes:
-        eligible = frame.loc[frame["available_bucket_end"] <= close]
-        row: dict[str, float | str] = {"decision_time": close.isoformat()}
-        if eligible.empty:
-            for category in CATEGORIES:
-                row[f"event_{category}"] = 0.0
-            row.update(event_total_pressure=0.0, event_count=0.0, event_surprise=0.0)
-            rows.append(row)
-            continue
-        elapsed_days = (close - eligible["available_bucket_end"]).dt.total_seconds().to_numpy() / 86400.0
-        weights = np.exp(-decay_k * elapsed_days)
-        pressure = eligible["severity_sum"].to_numpy() * weights
-        counts = eligible["event_count"].to_numpy() * weights
-        for category in CATEGORIES:
-            mask = eligible["category"].to_numpy() == category
-            row[f"event_{category}"] = float(pressure[mask].sum())
-        row["event_total_pressure"] = float(pressure.sum())
-        row["event_count"] = float(counts.sum())
-        row["event_surprise"] = 0.0
-        rows.append(row)
-    result = pd.DataFrame(rows)
-    result["decision_time"] = pd.to_datetime(result["decision_time"], utc=True)
-    result = result.set_index("decision_time").sort_index()
-    return result
+    timeline = pd.date_range(frame["available_bucket_end"].min(), frame["available_bucket_end"].max(), freq="15min", tz="UTC")
+    wide_pressure = frame.pivot_table(index="available_bucket_end", columns="category", values="severity_sum", aggfunc="sum", fill_value=0.0).reindex(timeline, fill_value=0.0)
+    wide_count = frame.pivot_table(index="available_bucket_end", columns="category", values="event_count", aggfunc="sum", fill_value=0.0).reindex(timeline, fill_value=0.0)
+    pressure_out = pd.DataFrame(0.0, index=timeline, columns=CATEGORIES)
+    count_out = pd.DataFrame(0.0, index=timeline, columns=CATEGORIES)
+    decay = 2.0 ** (-(15.0 / 1440.0) / HALF_LIFE_DAYS)
+    for category in CATEGORIES:
+        source_pressure = wide_pressure.get(category, pd.Series(0.0, index=timeline)).to_numpy(dtype=float)
+        source_count = wide_count.get(category, pd.Series(0.0, index=timeline)).to_numpy(dtype=float)
+        p = np.empty(len(timeline), dtype=float)
+        c = np.empty(len(timeline), dtype=float)
+        prev_p = prev_c = 0.0
+        for i in range(len(timeline)):
+            prev_p = source_pressure[i] + prev_p * decay
+            prev_c = source_count[i] + prev_c * decay
+            p[i], c[i] = prev_p, prev_c
+        pressure_out[category] = p
+        count_out[category] = c
+    selected = pressure_out.reindex(closes, method="ffill").fillna(0.0)
+    selected_count = count_out.reindex(closes, method="ffill").fillna(0.0)
+    selected.columns = [f"event_{c}" for c in selected.columns]
+    selected["event_total_pressure"] = selected.sum(axis=1)
+    selected["event_count"] = selected_count.sum(axis=1)
+    selected["event_surprise"] = 0.0
+    selected.index.name = "decision_time"
+    return selected
 
 
 def main() -> int:
@@ -105,21 +101,17 @@ def main() -> int:
     parser.add_argument("--project", required=True)
     parser.add_argument("--start", default="2015-02-19")
     parser.add_argument("--end", default="2025-12-31")
-    parser.add_argument("--output", default="data/historical/normalized/events_gdelt2_features.csv")
+    parser.add_argument("--output", default="data/gdelt2/events_gdelt2_features.csv")
     args = parser.parse_args()
-
     client = bigquery.Client(project=args.project)
-    query = _query(args.start, args.end)
-    params = [
-        bigquery.ScalarQueryParameter("start_date", "DATE", args.start),
-        bigquery.ScalarQueryParameter("end_date", "DATE", args.end),
-    ]
     config = bigquery.QueryJobConfig(
-        query_parameters=params,
+        query_parameters=[
+            bigquery.ScalarQueryParameter("start_date", "DATE", args.start),
+            bigquery.ScalarQueryParameter("end_date", "DATE", args.end),
+        ],
         maximum_bytes_billed=MAX_BYTES_BILLED,
     )
-    job = client.query(query, job_config=config)
-    rows = list(job.result())
+    rows = list(client.query(_query(), job_config=config).result())
     raw = pd.DataFrame([dict(row) for row in rows])
     if raw.empty:
         raise RuntimeError("GDELT2 BigQuery returned no event buckets")
