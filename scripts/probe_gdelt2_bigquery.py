@@ -17,7 +17,7 @@ def main() -> int:
 
     client = bigquery.Client(project=args.project)
     query = f"""
-        SELECT 1 AS probe_ok
+        SELECT GLOBALEVENTID, DATEADDED
         FROM `{TABLE}`
         WHERE _PARTITIONDATE = @partition_date
         LIMIT 1
