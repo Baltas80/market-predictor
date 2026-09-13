@@ -6,6 +6,7 @@ from google.cloud import bigquery
 
 
 TABLE = "gdelt-bq.gdeltv2.events_partitioned"
+MAX_PROBE_BYTES = 100_000_000
 
 
 def main() -> int:
@@ -16,7 +17,7 @@ def main() -> int:
 
     client = bigquery.Client(project=args.project)
     query = f"""
-        SELECT GLOBALEVENTID, SQLDATE, DATEADDED, SOURCEURL
+        SELECT 1 AS probe_ok
         FROM `{TABLE}`
         WHERE _PARTITIONDATE = @partition_date
         LIMIT 1
@@ -25,26 +26,20 @@ def main() -> int:
         query_parameters=[
             bigquery.ScalarQueryParameter("partition_date", "DATE", args.partition_date)
         ],
-        maximum_bytes_billed=10_000_000,
+        maximum_bytes_billed=MAX_PROBE_BYTES,
     )
 
     dry_run_config = bigquery.QueryJobConfig(
         query_parameters=job_config.query_parameters,
         dry_run=True,
         use_query_cache=False,
-        maximum_bytes_billed=10_000_000,
+        maximum_bytes_billed=MAX_PROBE_BYTES,
     )
     dry_run = client.query(query, job_config=dry_run_config)
     print(f"dry_run_bytes={dry_run.total_bytes_processed}")
 
     rows = list(client.query(query, job_config=job_config).result())
     print(f"rows_returned={len(rows)}")
-    if rows:
-        row = rows[0]
-        print(f"GLOBALEVENTID={row.GLOBALEVENTID}")
-        print(f"SQLDATE={row.SQLDATE}")
-        print(f"DATEADDED={row.DATEADDED}")
-        print("source_url_present=" + str(bool(row.SOURCEURL)))
     return 0
 
 
