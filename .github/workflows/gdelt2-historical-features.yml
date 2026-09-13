@@ -1,0 +1,59 @@
+name: GDELT 2 Historical BigQuery Features
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  historical-features:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install package
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[gcp,test]"
+      - name: Write service-account key
+        env:
+          GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$GCP_SERVICE_ACCOUNT_JSON"
+          printf '%s' "$GCP_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/gcp-service-account.json"
+          python - <<'PY'
+          import json, os
+          with open(os.path.join(os.environ['RUNNER_TEMP'], 'gcp-service-account.json'), encoding='utf-8') as f:
+              data = json.load(f)
+          assert data.get('type') == 'service_account'
+          print('service_account_key_format=valid')
+          PY
+      - name: Build PIT-safe GDELT2 features
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/gcp-service-account.json
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$GCP_PROJECT_ID"
+          python scripts/build_gdelt2_bigquery_features.py \
+            --project "$GCP_PROJECT_ID" \
+            --start 2015-02-19 \
+            --end 2025-12-31 \
+            --output data/gdelt2/events_gdelt2_features.csv
+      - name: Run PIT feature tests
+        run: python -m pytest -q tests/test_gdelt_daily_pit.py tests/test_gdelt_date_added.py tests/test_gdelt_chunk_layout.py
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gdelt2-historical-features-${{ github.sha }}
+          path: |
+            data/gdelt2/events_gdelt2_features.csv
+            data/gdelt2/gdelt2_feature_manifest.json
+          if-no-files-found: error
+          retention-days: 30
