@@ -87,7 +87,7 @@ jobs:
     name: GDELT2 ${{ matrix.start }} → ${{ matrix.end }}
     needs: prepare-matrix
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -136,6 +136,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
