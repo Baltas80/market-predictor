@@ -16,6 +16,10 @@ from market_predictor.features import add_market_features, make_target
 from market_predictor.financial import backtest_long_only
 
 FRED_SERIES = ("FEDFUNDS", "DGS10", "CPIAUCSL", "UNRATE", "VIXCLS")
+TECHNICAL = [
+    "return_1d", "return_5d", "volatility_20d", "price_to_sma20",
+    "volume_change", "range_pct",
+]
 HORIZON = 5
 INITIAL_TRAIN_FRACTION = 0.60
 TEST_FRACTION = 0.10
@@ -53,12 +57,18 @@ def main() -> None:
         fred[series_id] = path
 
     macro = materialize_macro(market.index, fred, align_fred_point_in_time)
-    data = add_market_features(market.join(macro.drop(columns=[c for c in macro.columns if c.endswith("_vintage")]), how="left"))
+    data = add_market_features(market.join(
+        macro.drop(columns=[c for c in macro.columns if c.endswith("_vintage")]),
+        how="left",
+    ))
     data["target"] = make_target(data, horizon=HORIZON)
-    data = data.dropna(subset=[
-        "return_1d", "return_5d", "volatility_20d", "price_to_sma20",
-        "volume_change", "range_pct", "target",
-    ]).copy()
+
+    # A and B must use exactly the same admissible observations.  Because B
+    # contains all five macro series, the common sample starts only where
+    # every PIT macro input is actually available; no revised pre-vintage data
+    # are backfilled.
+    required = TECHNICAL + list(FRED_SERIES) + ["target"]
+    data = data.dropna(subset=required).copy()
 
     initial_train_size = max(1, int(len(data) * INITIAL_TRAIN_FRACTION))
     test_size = max(1, int(len(data) * TEST_FRACTION))
@@ -109,8 +119,8 @@ def main() -> None:
         "coverage_start": str(data.index.min()),
         "coverage_end": str(data.index.max()),
         "observations": len(data),
-        "features_A": results[0].features,
-        "features_B": results[1].features,
+        "features_A": tuple(TECHNICAL),
+        "features_B": tuple(TECHNICAL + list(FRED_SERIES)),
         "model": "market_predictor.model.fit_predict",
         "horizon": HORIZON,
         "initial_train_fraction": INITIAL_TRAIN_FRACTION,
@@ -122,9 +132,13 @@ def main() -> None:
         "benchmark": "S&P 500 close / buy-and-hold via backtest_long_only",
         "lockbox_used": False,
         "pit_macro": True,
+        "common_sample_for_A_B": True,
         "result_files": ["ab_summary.csv", "ab_financial.csv"],
     }
-    (output / "experiment_metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    (output / "experiment_metadata.json").write_text(
+        json.dumps(metadata, indent=2, sort_keys=True, default=str) + "\n",
+        encoding="utf-8",
+    )
     print(summary.to_string(index=False))
     print(financial.to_string(index=False))
     print(json.dumps(metadata, indent=2, sort_keys=True, default=str))
