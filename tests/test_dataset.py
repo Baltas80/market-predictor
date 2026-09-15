@@ -41,6 +41,24 @@ def test_materialize_macro_preserves_only_point_in_time_values(tmp_path) -> None
     assert result.loc["2020-01-04", "TEST"] == 2.0
 
 
+def test_materialize_macro_preserves_timezone_for_market_join(tmp_path) -> None:
+    path = tmp_path / "fred.csv"
+    pd.DataFrame(
+        {
+            "date": ["2020-01-01"],
+            "value": [1.0],
+            "realtime_start": ["2019-12-31"],
+        }
+    ).to_csv(path, index=False)
+    index = pd.date_range("2020-01-01", periods=2, freq="D", tz="UTC")
+    from market_predictor.data_sources import align_fred_point_in_time
+    result = materialize_macro(index, {"TEST": path}, align_fred_point_in_time)
+    assert result.index.equals(index)
+    market = pd.DataFrame({"close": [100.0, 101.0]}, index=index)
+    joined = market.join(result[["TEST"]], how="left")
+    assert joined["TEST"].notna().all()
+
+
 def test_load_fred_vintage_accepts_missing_realtime_end(tmp_path) -> None:
     path = tmp_path / "fred.csv"
     pd.DataFrame({
