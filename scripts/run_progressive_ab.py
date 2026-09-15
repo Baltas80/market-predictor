@@ -49,7 +49,13 @@ def main() -> None:
         subset = raw_macro.loc[
             raw_macro["series_id"] == series_id,
             ["observation_date", "value", "vintage_start", "vintage_end"],
-        ]
+        ].rename(
+            columns={
+                "observation_date": "date",
+                "vintage_start": "realtime_start",
+                "vintage_end": "realtime_end",
+            }
+        )
         if subset.empty:
             raise RuntimeError(f"Missing required FRED series: {series_id}")
         path = output / f"fred_{series_id}.csv"
@@ -63,7 +69,7 @@ def main() -> None:
     ))
     data["target"] = make_target(data, horizon=HORIZON)
 
-    # A and B must use exactly the same admissible observations.  Because B
+    # A and B must use exactly the same admissible observations. Because B
     # contains all five macro series, the common sample starts only where
     # every PIT macro input is actually available; no revised pre-vintage data
     # are backfilled.
