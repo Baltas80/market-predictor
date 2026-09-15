@@ -1,0 +1,76 @@
+name: Progressive Real A-B Research
+
+on:
+  push:
+    branches: [fix/gdelt-dual-track]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: progressive-real-ab
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  stage-base:
+    name: STAGE MARKET + FRED FOR A/B
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip && python -m pip install -e ".[test]"
+      - name: Stage market and PIT macro only
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: |
+          set +e
+          for attempt in 1 2 3; do
+            python scripts/ingest_historical.py --output-dir data/historical --execute --skip-gdelt --skip-sec
+            status=$?
+            if [ "$status" -eq 0 ]; then exit 0; fi
+            if [ "$attempt" -lt 3 ]; then rm -rf data/historical; sleep 90; fi
+          done
+          exit "$status"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: progressive-ab-base-${{ github.sha }}
+          path: data/historical/
+          if-no-files-found: error
+          retention-days: 14
+
+  research:
+    name: REAL A/B WALK-FORWARD + FINANCIAL
+    needs: stage-base
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip && python -m pip install -e ".[test]"
+      - uses: actions/download-artifact@v8
+        with:
+          name: progressive-ab-base-${{ github.sha }}
+          path: data/historical
+      - name: Execute A/B without final lockbox
+        run: python scripts/run_progressive_ab.py
+      - name: Focused A/B tests
+        run: python -m pytest -q tests/test_pipeline.py tests/test_ablation.py
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: progressive-ab-results-${{ github.sha }}
+          path: data/progressive_ab/
+          if-no-files-found: error
+          retention-days: 30
