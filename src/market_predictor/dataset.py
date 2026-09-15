@@ -62,11 +62,16 @@ def materialize_macro(
     fred_files: dict[str, str | Path],
     aligner,
 ) -> pd.DataFrame:
-    """Create a market-date macro panel using only historical vintages."""
-    output = pd.DataFrame(index=pd.DatetimeIndex(market_index).normalize())
+    """Create a market-date macro panel using only historical vintages.
+
+    Preserve the market index representation so the PIT-aligned values can be
+    joined back to the market frame without losing timezone information.
+    """
+    market_index = pd.DatetimeIndex(market_index)
+    output = pd.DataFrame(index=market_index)
     for series_id, path in fred_files.items():
         observations = load_fred_vintage(path)
-        aligned = aligner(observations, output.index)
+        aligned = aligner(observations, market_index)
         output[series_id] = aligned["value"].to_numpy()
         output[f"{series_id}_vintage"] = aligned["vintage"].to_numpy()
     return output
