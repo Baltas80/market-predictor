@@ -99,10 +99,14 @@ jobs:
           retention-days: 7
 
   recover:
-    name: RECOVER GDELT 1.0 GAPS
-    needs: gdelt
+    name: RECOVER GDELT 1.0 ${{ matrix.start }} → ${{ matrix.end }}
+    needs: [prepare, gdelt]
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -110,19 +114,20 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: python -m pip install --upgrade pip && python -m pip install -e ".[test]"
-      - uses: actions/download-artifact@v8
+      - name: Download only this GDELT chunk
+        uses: actions/download-artifact@v8
         with:
-          pattern: gdelt1-*
+          name: gdelt1-${{ matrix.chunk }}-${{ matrix.start }}-${{ matrix.end }}
           path: data/gdelt_chunks
-          merge-multiple: true
-      - run: |
+      - name: Recover missing source-days for this chunk
+        run: |
           python scripts/recover_gdelt_daily_gaps.py \
             --chunks data/gdelt_chunks \
             --output data/gdelt_chunks/gdelt_recovered.csv \
             --remaining-output data/gdelt_chunks/gdelt_recovery_missing.csv
       - uses: actions/upload-artifact@v7
         with:
-          name: gdelt1-recovery-${{ github.sha }}
+          name: gdelt1-recovery-${{ matrix.chunk }}-${{ matrix.start }}-${{ matrix.end }}
           path: |
             data/gdelt_chunks/gdelt_recovered.csv
             data/gdelt_chunks/gdelt_recovery_missing.csv
@@ -152,8 +157,9 @@ jobs:
           merge-multiple: true
       - uses: actions/download-artifact@v8
         with:
-          name: gdelt1-recovery-${{ github.sha }}
+          pattern: gdelt1-recovery-*
           path: data/gdelt_chunks
+          merge-multiple: true
       - run: python scripts/finalize_historical_staging.py --staging data/historical --chunks data/gdelt_chunks
       - uses: actions/upload-artifact@v7
         with:
