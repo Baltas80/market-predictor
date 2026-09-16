@@ -31,6 +31,7 @@ TEST_FRACTION = 0.10
 TRANSACTION_COST_BPS = 5.0
 SLIPPAGE_BPS = 0.0
 PERIODS_PER_YEAR = 252
+RANDOM_SEED = 0
 
 
 def sha256_frame(frame: pd.DataFrame) -> str:
@@ -145,6 +146,7 @@ def main() -> None:
         "transaction_cost_bps": TRANSACTION_COST_BPS,
         "slippage_bps": SLIPPAGE_BPS,
         "benchmark": "SPX buy-and-hold over each common OOS prediction path",
+        "random_seed": RANDOM_SEED,
         "pit_macro": True,
         "lockbox_used": False,
         "market_hash": sha256_frame(market.loc[data.index.min():data.index.max()]),
@@ -152,14 +154,14 @@ def main() -> None:
         "result_files": ["ab_summary.csv", "ab_financial.csv"],
     }
     (out / "experiment_metadata.json").write_text(
-        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        json.dumps(metadata, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8"
     )
     print("=== A/B SUMMARY ===")
     print(summary.to_string(index=False))
     print("=== A/B FINANCIAL ===")
     print(financial.to_string(index=False))
     print("=== METADATA ===")
-    print(json.dumps(metadata, indent=2, sort_keys=True))
+    print(json.dumps(metadata, indent=2, sort_keys=True, default=str))
 
 
 if __name__ == "__main__":
