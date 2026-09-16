@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -36,3 +37,21 @@ def test_target_horizon():
 def test_invalid_horizon():
     with pytest.raises(ValueError):
         make_target(sample_data(), horizon=0)
+
+
+def test_non_finite_derived_features_are_quarantined():
+    data = sample_data()
+    data.loc[data.index[10], "volume"] = 0.0
+    data.loc[data.index[11], "volume"] = 1000.0
+    data.loc[data.index[12], "close"] = 0.0
+    data.loc[data.index[12], "high"] = 1.0
+    data.loc[data.index[12], "low"] = -1.0
+
+    out = add_market_features(data)
+    derived = [
+        "return_1d", "return_5d", "volatility_20d", "sma_20", "sma_50",
+        "price_to_sma20", "volume_change", "range_pct",
+    ]
+    assert np.isfinite(out[derived].dropna().to_numpy()).all()
+    assert pd.isna(out.loc[data.index[11], "volume_change"])
+    assert pd.isna(out.loc[data.index[12], "range_pct"])
