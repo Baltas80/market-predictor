@@ -1,21 +1,21 @@
-name: Real A/B Window — 2015-2025
+name: Real A/B Window — 2015-2017
 
 on:
   push:
-    branches: [research/real-ab-window-2015-2025]
+    branches: [research/real-ab-window-2015-2017]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: real-ab-window-independent
+  group: real-ab-window-2015-2017
   cancel-in-progress: false
 
 env:
   PYTHONUNBUFFERED: "1"
-  AB_START: "2015-01-01"
-  AB_END: "2025-12-31"
+  AB_START: "2015-02-19"
+  AB_END: "2017-12-31"
 
 jobs:
   real-ab:
