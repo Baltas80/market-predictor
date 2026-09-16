@@ -2,7 +2,7 @@ name: Progressive Real A-B Research
 
 on:
   push:
-    branches: [fix/gdelt-dual-track]
+    branches: [fix/gdelt-dual-track, fix/baseline-finite-features]
   workflow_dispatch:
 
 permissions:
