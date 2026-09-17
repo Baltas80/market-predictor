@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 
@@ -9,7 +10,9 @@ def add_market_features(df: pd.DataFrame) -> pd.DataFrame:
     """Add leakage-safe features to an OHLCV dataframe.
 
     Expected columns: open, high, low, close, volume.
-    Features use only current or historical observations.
+    Features use only current or historical observations. Non-finite derived
+    values are converted to NaN so downstream staging can exclude them rather
+    than passing inf values into estimators.
     """
     required = {"open", "high", "low", "close", "volume"}
     missing = required - set(df.columns)
@@ -25,6 +28,11 @@ def add_market_features(df: pd.DataFrame) -> pd.DataFrame:
     out["price_to_sma20"] = out["close"] / out["sma_20"] - 1.0
     out["volume_change"] = out["volume"].pct_change()
     out["range_pct"] = (out["high"] - out["low"]) / out["close"]
+    derived = [
+        "return_1d", "return_5d", "volatility_20d", "sma_20", "sma_50",
+        "price_to_sma20", "volume_change", "range_pct",
+    ]
+    out[derived] = out[derived].replace([np.inf, -np.inf], np.nan)
     return out
 
 
