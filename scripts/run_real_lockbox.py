@@ -19,6 +19,7 @@ from market_predictor.reproducibility import canonical_json_hash
 
 
 FRED_SERIES = ("FEDFUNDS", "DGS10", "CPIAUCSL", "UNRATE", "VIXCLS")
+GDELT_PATHS = ("events_gdelt.csv", "events_gdelt.csv.gz")
 
 
 def _event_sort_key(event) -> pd.Timestamp:
@@ -37,7 +38,7 @@ def _staging_fingerprint(staging: Path) -> str:
     paths = [
         staging / "normalized" / "market.csv",
         staging / "raw" / "macro_fred.csv",
-        staging / "normalized" / "events_gdelt.csv",
+        *(staging / "normalized" / name for name in GDELT_PATHS),
         staging / "normalized" / "events_sec_litigation.csv",
     ]
     digest = hashlib.sha256()
@@ -63,7 +64,9 @@ def _assert_required_gdelt_coverage(staging: Path) -> None:
     missing = pd.read_csv(path)
     if missing.empty:
         return
-    required = missing.loc[missing.get("source_id", "") == "GDELT_2_Event_Database"] if "source_id" in missing.columns else missing
+    if "source_id" not in missing.columns:
+        raise RuntimeError("Final lockbox refused: GDELT coverage manifest has no source_id column")
+    required = missing.loc[missing["source_id"].astype("string").str.startswith("GDELT_2_Event_Database")]
     if not required.empty:
         raise RuntimeError(
             f"Final lockbox refused: {len(required)} required GDELT source-days remain missing. "
@@ -108,7 +111,7 @@ def main() -> None:
     panel = market.join(macro.drop(columns=[c for c in macro.columns if c.endswith("_vintage")]), how="left")
 
     events = []
-    for name in ("events_gdelt.csv", "events_sec_litigation.csv"):
+    for name in GDELT_PATHS + ("events_sec_litigation.csv",):
         path = staging / "normalized" / name
         if path.exists() and path.stat().st_size > 0:
             events.extend(load_events_csv(path))
