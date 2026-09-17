@@ -13,6 +13,7 @@ from market_predictor.data_sources import (
     load_fred_observations,
     load_stooq_daily,
 )
+from market_predictor.gdelt1 import GDELT_SOURCE_ID, gdelt1_daily_availability
 from market_predictor.research_schema import normalize_event_sources, validate_event_frame
 
 
@@ -24,16 +25,27 @@ def test_gdelt_category_keeps_unknown_event_broad() -> None:
     assert _gdelt_category("01", "010", "ACTOR") == "political_crisis"
 
 
-def test_gdelt_event_conversion_deduplicates_and_preserves_availability() -> None:
+def test_gdelt1_daily_availability_uses_next_day_est_boundary() -> None:
+    assert gdelt1_daily_availability("2025-01-01") == pd.Timestamp("2025-01-02T11:00:00Z")
+
+
+def test_gdelt1_daily_availability_handles_edt() -> None:
+    assert gdelt1_daily_availability("2025-07-01") == pd.Timestamp("2025-07-02T10:00:00Z")
+
+
+def test_gdelt1_source_id_is_not_gdelt2() -> None:
+    assert GDELT_SOURCE_ID == "GDELT_1_Event_Database"
+    assert GDELT_SOURCE_ID != "GDELT_2_Event_Database"
+
+
+def test_gdelt_event_conversion_requires_explicit_pit_availability() -> None:
     frame = pd.DataFrame(
         {
             "global_event_id": ["1", "1", "2"],
             "sql_date": pd.to_datetime(["2020-01-01"] * 2 + ["2020-01-02"], utc=True),
             "category": ["war_conflict", "war_conflict", "social_unrest"],
-            "date_added": pd.to_datetime(
-                ["2020-01-01T12:00:00Z", "2020-01-01T12:00:00Z", "2020-01-02T12:00:00Z"],
-                utc=True,
-            ),
+            "date_added": ["20200101", "20200101", "20200102"],
+            "available_at": pd.to_datetime(["2020-01-02T11:00:00Z"] * 2 + ["2020-01-03T11:00:00Z"], utc=True),
             "severity": [0.8, 0.8, 0.4],
             "action_geo_country": ["US", "US", "FR"],
             "actor2_name": ["ACTOR", "ACTOR", "ACTOR2"],
@@ -45,11 +57,30 @@ def test_gdelt_event_conversion_deduplicates_and_preserves_availability() -> Non
     result = gdelt_events_to_market_events(frame)
     assert len(result) == 2
     assert pd.isna(result.iloc[0]["published_at"])
-    assert result.iloc[0]["available_at"] == pd.Timestamp("2020-01-01T12:00:00Z")
+    assert result.iloc[0]["available_at"] == pd.Timestamp("2020-01-02T11:00:00Z")
     assert result.iloc[0]["event_time"] == pd.Timestamp("2020-01-01T00:00:00Z")
     assert result.iloc[0]["event_id"] == "1"
-    assert result.iloc[0]["source"] == "GDELT_2_Event_Database"
-    assert result.iloc[0]["availability_proxy"] == "DATEADDED"
+    assert result.iloc[0]["source"] == "GDELT_1_Event_Database"
+    assert result.iloc[0]["availability_proxy"] == "daily_archive_publication_boundary"
+
+
+def test_gdelt_event_conversion_rejects_missing_explicit_availability() -> None:
+    frame = pd.DataFrame(
+        {
+            "global_event_id": ["1"],
+            "sql_date": pd.to_datetime(["2020-01-01"], utc=True),
+            "category": ["war_conflict"],
+            "date_added": ["20200101"],
+            "severity": [0.8],
+            "action_geo_country": ["US"],
+            "actor2_name": ["ACTOR"],
+            "num_sources": [5],
+            "surprise": [0.0],
+            "source_url": ["https://example.test/1"],
+        }
+    )
+    with pytest.raises(ValueError, match="explicit PIT fields"):
+        gdelt_events_to_market_events(frame)
 
 
 def test_unknown_publication_is_valid_when_availability_is_known() -> None:
@@ -62,7 +93,7 @@ def test_unknown_publication_is_valid_when_availability_is_known() -> None:
                 "available_at": pd.to_datetime(["2020-01-01T12:00:00Z"], utc=True),
             }
         ),
-        source_id="GDELT_2_Event_Database",
+        source_id="GDELT_1_Event_Database",
     )
     validate_event_frame(event)
 
@@ -85,18 +116,8 @@ def test_fred_loader_uses_tall_realtime_response(monkeypatch) -> None:
     captured: dict = {}
     payload = {
         "observations": [
-            {
-                "realtime_start": "2020-01-02",
-                "realtime_end": "2020-01-02",
-                "date": "2020-01-01",
-                "value": "1.0",
-            },
-            {
-                "realtime_start": "2020-01-03",
-                "realtime_end": "2020-01-03",
-                "date": "2020-01-01",
-                "value": "2.0",
-            },
+            {"realtime_start": "2020-01-02", "realtime_end": "2020-01-02", "date": "2020-01-01", "value": "1.0"},
+            {"realtime_start": "2020-01-03", "realtime_end": "2020-01-03", "date": "2020-01-01", "value": "2.0"},
         ]
     }
 
@@ -105,13 +126,7 @@ def test_fred_loader_uses_tall_realtime_response(monkeypatch) -> None:
         return SimpleNamespace(json=lambda: payload)
 
     monkeypatch.setattr(data_sources, "_get", fake_get)
-    result = load_fred_observations(
-        "CPIAUCSL",
-        "test-key",
-        realtime_start="2020-01-01",
-        realtime_end="2020-01-04",
-    )
-
+    result = load_fred_observations("CPIAUCSL", "test-key", realtime_start="2020-01-01", realtime_end="2020-01-04")
     assert captured["output_type"] == 1
     assert list(result["series_id"].unique()) == ["CPIAUCSL"]
     assert list(result["value"]) == [1.0, 2.0]
@@ -126,9 +141,7 @@ def test_sec_category_distinguishes_fraud_and_scandal() -> None:
 
 
 def test_stooq_accepts_lowercase_date_header(monkeypatch) -> None:
-    response = SimpleNamespace(
-        text="date,open,high,low,close,volume\n2020-01-02,3200,3220,3190,3210,1000000\n"
-    )
+    response = SimpleNamespace(text="date,open,high,low,close,volume\n2020-01-02,3200,3220,3190,3210,1000000\n")
     monkeypatch.setattr(data_sources, "_get", lambda *args, **kwargs: response)
     result = load_stooq_daily("^spx", start="2020-01-02", end="2020-01-02")
     assert len(result) == 1
