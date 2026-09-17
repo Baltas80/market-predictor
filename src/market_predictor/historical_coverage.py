@@ -1,9 +1,4 @@
-"""Declarative coverage plan for the real historical research dataset.
-
-The plan is intentionally separate from downloaded data. It defines the
-periods that must be present before an A/B/C lockbox run is admissible and
-records which sources are required or optional.
-"""
+"""Declarative coverage plan for the real historical research dataset."""
 
 from __future__ import annotations
 
@@ -26,50 +21,30 @@ DATASET_START = date(2000, 1, 3)
 DATASET_END = date(2025, 12, 31)
 
 MARKET_SOURCE = SourceCoverage(
-    "stooq_spx_daily",
-    "S&P 500 daily OHLCV",
-    DATASET_START,
-    DATASET_END,
-    True,
-    False,
+    "stooq_spx_daily", "S&P 500 daily OHLCV", DATASET_START, DATASET_END, True, False,
     "Daily market bars; executable-trading interpretation remains separate from the cash index.",
 )
 
-# DFF is excluded because FRED exposes the series but does not provide the
-# ALFRED real-time history required by this point-in-time pipeline. FEDFUNDS
-# provides the vintage-aware federal-funds-rate history used by staging.
 FRED_SOURCES = tuple(
     SourceCoverage(
-        "fred_vintages",
-        series,
-        DATASET_START,
-        DATASET_END,
-        True,
-        True,
+        "fred_vintages", series, DATASET_START, DATASET_END, True, True,
         "FRED PIT coverage is discovered per series from vintage dates; pre-vintage periods are intentionally absent rather than backfilled.",
     )
     for series in ("FEDFUNDS", "DGS10", "CPIAUCSL", "UNRATE", "VIXCLS")
 )
 
-# GDELT 2.0 Event Database begins on 2015-02-19. Earlier dates are not source
-# gaps and must never be queued for download/recovery.
 GDELT_SOURCE = SourceCoverage(
     "gdelt_events",
-    "GDELT 2.0 Events",
+    "GDELT 1.0 Events",
     date(2015, 2, 19),
     DATASET_END,
     True,
     True,
-    "DATEADDED is retained as an availability proxy; event_time, publication and availability are never conflated.",
+    "Daily events/ archives; DATEADDED is retained only as original source data. PIT availability uses the conservative next-day 06:00 America/New_York publication boundary.",
 )
 
 SEC_SOURCE = SourceCoverage(
-    "sec_litigation_rss",
-    "SEC Litigation Releases RSS",
-    date(2000, 1, 1),
-    DATASET_END,
-    False,
-    True,
+    "sec_litigation_rss", "SEC Litigation Releases RSS", date(2000, 1, 1), DATASET_END, False, True,
     "Publication timestamp is the conservative daily availability timestamp supplied by the feed.",
 )
 
@@ -77,7 +52,6 @@ SOURCE_COVERAGE = (MARKET_SOURCE, *FRED_SOURCES, GDELT_SOURCE, SEC_SOURCE)
 
 
 def coverage_plan() -> tuple[SourceCoverage, ...]:
-    """Return the immutable source/period plan in deterministic order."""
     return SOURCE_COVERAGE
 
 
@@ -86,7 +60,6 @@ def required_sources() -> tuple[SourceCoverage, ...]:
 
 
 def coverage_dict() -> list[dict[str, object]]:
-    """Serialize coverage for manifests/reports without timestamps or hashes."""
     return [
         {
             "source_id": source.source_id,
