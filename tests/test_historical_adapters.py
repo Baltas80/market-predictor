@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from market_predictor import historical_adapters
+from market_predictor.gdelt1 import GDELT_SOURCE_ID
 
 
 def _event_frame(event_id: str = "1") -> pd.DataFrame:
@@ -12,7 +13,7 @@ def _event_frame(event_id: str = "1") -> pd.DataFrame:
             "event_id": [event_id],
             "event_time": pd.to_datetime(["2020-01-01"], utc=True),
             "published_at": pd.NaT,
-            "available_at": pd.to_datetime(["2020-01-01T12:00:00Z"], utc=True),
+            "available_at": pd.to_datetime(["2020-01-02T11:00:00Z"], utc=True),
             "category": ["war_conflict"],
             "severity": [0.5],
             "country": ["US"],
@@ -21,8 +22,8 @@ def _event_frame(event_id: str = "1") -> pd.DataFrame:
             "duration_days": [0.0],
             "media_intensity": [1.0],
             "surprise": [0.0],
-            "source": ["GDELT_2_Event_Database"],
-            "availability_proxy": ["DATEADDED"],
+            "source": [GDELT_SOURCE_ID],
+            "availability_proxy": ["daily_archive_publication_boundary"],
             "source_url": ["https://example.test/1"],
         }
     )
@@ -51,6 +52,8 @@ def test_fetch_gdelt_retries_transient_daily_failure(monkeypatch, capsys) -> Non
 
     assert calls["count"] == 2
     assert len(result) == 1
+    assert result.iloc[0]["source"] == GDELT_SOURCE_ID
+    assert result.iloc[0]["availability_proxy"] == "daily_archive_publication_boundary"
     assert "GDELT staging progress: 1/1 days" in capsys.readouterr().out
 
 

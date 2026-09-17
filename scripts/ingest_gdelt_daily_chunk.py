@@ -1,112 +1,44 @@
-"""Ingest GDELT 1.0 daily event files with conservative PIT availability.
+"""Compatibility wrapper for the canonical GDELT 1.0 daily ingestion path.
 
-The production historical lockbox currently uses the official GDELT 1.0 daily
-stream at events/{YYYYMMDD}.export.CSV.zip. Those files are named for the
-previous day's event-discovery date and are published the following morning.
-We therefore never treat SQLDATE or the 8-digit file date as availability.
-Instead, availability is assigned conservatively to 12:00 UTC on the day after
-the file date. Publication time remains unknown.
+This legacy script remains available for historical workflows that call its
+original function names, but all parsing and PIT semantics are delegated to
+``market_predictor.gdelt1``. There is intentionally no second DATEADDED/PIT
+implementation in this module.
 """
 from __future__ import annotations
 
 import argparse
-from datetime import date, datetime, timedelta, timezone
-from io import BytesIO
+from datetime import date, timedelta
 from pathlib import Path
 import time
-import zipfile
 
 import pandas as pd
 import requests
 
-from market_predictor.data_sources import _gdelt_category
+from market_predictor.gdelt1 import GDELT_SOURCE_ID, gdelt1_daily_availability, load_gdelt_day
 from market_predictor.research_schema import deduplicate_events, normalize_event_sources
 
 GDELT_DAY_RETRIES = 4
 GDELT_RETRY_BASE_SECONDS = 2
-GDELT_CHECKPOINT_VERSION = "gdelt1-daily-pit-v1"
-GDELT_SOURCE_ID = "GDELT_1_Daily_Event_Database"
+GDELT_CHECKPOINT_VERSION = "gdelt1-daily-pit-v2"
 GDELT_DAILY_URL = "https://data.gdeltproject.org/events/{date}.export.CSV.zip"
 
-GDELT_COLUMNS_58 = [
-    "global_event_id", "sql_date", "month_year", "year", "fraction_date",
-    "actor1_code", "actor1_name", "actor1_country", "actor1_known_group",
-    "actor1_ethnic", "actor1_religion1", "actor1_religion2", "actor1_type1",
-    "actor1_type2", "actor1_type3", "actor2_code", "actor2_name",
-    "actor2_country", "actor2_known_group", "actor2_ethnic", "actor2_religion1",
-    "actor2_religion2", "actor2_type1", "actor2_type2", "actor2_type3",
-    "is_root_event", "event_code", "event_base_code", "event_root_code",
-    "quad_class", "goldstein_scale", "num_mentions", "num_sources",
-    "num_articles", "avg_tone", "actor1_geo_type", "actor1_geo_fullname",
-    "actor1_geo_country", "actor1_geo_adm1", "actor1_geo_lat", "actor1_geo_long",
-    "actor1_geo_feature_id", "actor2_geo_type", "actor2_geo_fullname",
-    "actor2_geo_country", "actor2_geo_adm1", "actor2_geo_lat", "actor2_geo_long",
-    "actor2_geo_feature_id", "action_geo_type", "action_geo_fullname",
-    "action_geo_country", "action_geo_adm1", "action_geo_lat", "action_geo_long",
-    "action_geo_feature_id", "date_added", "source_url",
-]
 
-
-def _availability_for_file_date(file_date: date) -> pd.Timestamp:
-    """Return a conservative availability boundary for a GDELT 1.0 file."""
-    return pd.Timestamp(
-        datetime.combine(file_date + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
-        + timedelta(hours=12)
-    )
+def _availability_for_file_date(file_date: date | str | pd.Timestamp) -> pd.Timestamp:
+    """Delegate availability calculation to the canonical DST-aware PIT rule."""
+    return gdelt1_daily_availability(file_date)
 
 
 def load_gdelt_daily_day(day: str | pd.Timestamp) -> pd.DataFrame:
-    file_date = pd.Timestamp(day).date()
-    date_text = file_date.strftime("%Y%m%d")
-    response = requests.get(
-        GDELT_DAILY_URL.format(date=date_text),
-        timeout=120,
-        headers={"User-Agent": "market-predictor/0.1 (research ingestion)"},
-    )
-    response.raise_for_status()
-    with zipfile.ZipFile(BytesIO(response.content)) as archive:
-        members = archive.namelist()
-        if not members:
-            raise ValueError(f"Empty GDELT daily archive for {date_text}")
-        member = members[0]
-        with archive.open(member) as probe:
-            field_count = probe.readline().count(b"\t") + 1
-        if field_count != len(GDELT_COLUMNS_58):
-            raise ValueError(
-                f"Unexpected GDELT 1.0 field count for {date_text}: {field_count}; expected 58"
-            )
-        with archive.open(member) as handle:
-            frame = pd.read_csv(
-                handle,
-                sep="\t",
-                header=None,
-                names=GDELT_COLUMNS_58,
-                dtype=str,
-                low_memory=False,
-            )
-
-    frame["sql_date"] = pd.to_datetime(
-        frame["sql_date"].astype("string").str.strip(),
-        format="%Y%m%d",
-        utc=True,
-        errors="coerce",
-    )
-    for column in ["goldstein_scale", "num_mentions", "num_sources", "num_articles", "avg_tone"]:
-        frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    actor_text = frame[["actor1_name", "actor2_name", "action_geo_fullname"]].fillna("").agg(" ".join, axis=1)
-    frame["category"] = [
-        _gdelt_category(root, code, text)
-        for root, code, text in zip(frame["event_root_code"], frame["event_code"], actor_text)
-    ]
-    scale = frame["goldstein_scale"].abs().clip(0, 10) / 10
-    media = frame["num_sources"].fillna(0).clip(lower=0)
-    frame["severity"] = (0.7 * scale + 0.3 * (media / (media + 5)).clip(0, 1)).clip(0, 1)
-    frame["surprise"] = 0.0
-    frame["event_time"] = frame["sql_date"]
-    frame["published_at"] = pd.NaT
-    frame["available_at"] = _availability_for_file_date(file_date)
-    frame["event_id"] = frame["global_event_id"].astype("string")
-    return normalize_event_sources(frame, source_id=GDELT_SOURCE_ID)
+    """Compatibility adapter backed by the canonical GDELT 1.0 loader."""
+    raw = load_gdelt_day(day).copy()
+    if "event_id" not in raw.columns and "global_event_id" in raw.columns:
+        raw = raw.rename(columns={"global_event_id": "event_id"})
+    raw["event_time"] = raw["sql_date"]
+    raw["published_at"] = pd.NaT
+    if "available_at" not in raw.columns:
+        raise ValueError("canonical GDELT 1.0 loader returned no explicit available_at")
+    return normalize_event_sources(raw, source_id=GDELT_SOURCE_ID)
 
 
 def _checkpoint_path(checkpoint_dir: Path, day: str) -> Path:
@@ -126,6 +58,8 @@ def _read_checkpoint(path: Path) -> pd.DataFrame:
     required = ["event_id", "event_time", "available_at", "severity"]
     if not set(required).issubset(frame.columns) or frame[required].isna().any().any():
         raise ValueError("invalid GDELT 1.0 checkpoint PIT fields")
+    if "source_id" in frame and frame["source_id"].astype(str).ne(GDELT_SOURCE_ID).any():
+        raise ValueError("invalid GDELT 1.0 checkpoint source identifier")
     return frame
 
 
@@ -164,7 +98,7 @@ def fetch_gdelt_daily_chunk(start: str, end: str, checkpoint_dir: Path) -> tuple
                 frames.append(normalized.drop(columns=["checkpoint_version"]))
                 last_error = None
                 break
-            except (requests.RequestException, TimeoutError, ValueError, zipfile.BadZipFile) as exc:
+            except (requests.RequestException, TimeoutError, ValueError) as exc:
                 last_error = exc
                 if attempt < GDELT_DAY_RETRIES:
                     time.sleep(GDELT_RETRY_BASE_SECONDS * (2 ** (attempt - 1)))

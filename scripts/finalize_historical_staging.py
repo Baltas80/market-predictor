@@ -7,13 +7,13 @@ from pathlib import Path
 
 import pandas as pd
 
+from market_predictor.gdelt1 import GDELT_SOURCE_ID
 from market_predictor.historical_coverage import DATASET_START, DATASET_END, GDELT_SOURCE
 from market_predictor.historical_ingestion import build_source_manifest, write_source_manifest
 from market_predictor.historical_gate import validate_historical_dataset
 from market_predictor.research_schema import deduplicate_events
 
-STAGING_VERSION = "2026-09-12-staging-gdelt1-daily-pit-v1"
-GDELT_SOURCE_ID = "GDELT_1_Daily_Event_Database"
+STAGING_VERSION = "2026-09-17-staging-gdelt1-daily-pit-v2"
 EVENT_COLUMNS = [
     "event_id", "event_time", "published_at", "available_at", "source_id",
     "category", "severity", "country", "entity", "sector", "duration_days",
@@ -61,6 +61,21 @@ def main() -> int:
     frames = [pd.read_csv(path) for path in data_chunk_paths]
     nonempty_frames = [frame for frame in frames if not frame.empty]
     gdelt = deduplicate_events(pd.concat(nonempty_frames, ignore_index=True)) if nonempty_frames else pd.DataFrame(columns=EVENT_COLUMNS)
+
+    if not gdelt.empty:
+        if "source_id" not in gdelt.columns:
+            raise RuntimeError("GDELT staging is not admissible: source_id column is missing")
+        unexpected_sources = set(gdelt["source_id"].dropna().astype(str)) - {GDELT_SOURCE_ID}
+        if unexpected_sources:
+            raise RuntimeError(
+                "GDELT staging is not admissible: non-canonical source identifiers detected: "
+                + ", ".join(sorted(unexpected_sources))
+            )
+        if "available_at" not in gdelt.columns:
+            raise RuntimeError("GDELT staging is not admissible: explicit PIT availability is missing")
+        if gdelt["available_at"].isna().any():
+            raise RuntimeError("GDELT staging is not admissible: null PIT availability remains")
+
     gdelt.to_csv(raw / "events_gdelt.csv", index=False, lineterminator="\n")
     gdelt.to_csv(normalized / "events_gdelt.csv", index=False, lineterminator="\n")
 
@@ -73,7 +88,14 @@ def main() -> int:
     missing_path = raw / "events_gdelt_missing.csv"
     missing.to_csv(missing_path, index=False, lineterminator="\n")
 
-    gdelt_missing = missing.loc[missing["source_id"] == GDELT_SOURCE_ID].copy()
+    invalid_missing_sources = set(missing.get("source_id", pd.Series(dtype=str)).dropna().astype(str)) - {GDELT_SOURCE_ID}
+    if invalid_missing_sources:
+        raise RuntimeError(
+            "Historical staging is not admissible: unsupported GDELT source identifiers remain in gap manifests: "
+            + ", ".join(sorted(invalid_missing_sources))
+        )
+
+    gdelt_missing = missing.loc[missing["source_id"].astype(str) == GDELT_SOURCE_ID].copy() if not missing.empty else missing.copy()
     if not gdelt_missing.empty:
         dates = sorted(pd.to_datetime(gdelt_missing["date"], errors="coerce").dropna().dt.date.unique())
         preview = ", ".join(day.isoformat() for day in dates[:10])
@@ -88,7 +110,7 @@ def main() -> int:
     for source_id, source_type, path, uri, policy in (
         ("Stooq_SPX", "market", normalized / "market.csv", "https://stooq.com/q/d/l/", "daily cash-session close represented in UTC"),
         ("FRED_required_series", "macro", raw / "macro_fred.csv", "https://api.stlouisfed.org/fred/series/observations", "FRED realtime_start/vintage_start discovered from series/vintagedates; conservative decision-time lag is applied downstream"),
-        (GDELT_SOURCE_ID, "events", normalized / "events_gdelt.csv", "https://data.gdeltproject.org/events/{date}.export.CSV.zip", "GDELT 1.0 daily file publication boundary: conservative 12:00 UTC on the day after file date; original article publication time is unknown"),
+        (GDELT_SOURCE_ID, "events", normalized / "events_gdelt.csv", "https://data.gdeltproject.org/events/{date}.export.CSV.zip", "GDELT 1.0 daily archive: conservative next-day 06:00 America/New_York boundary, DST-aware; original article publication time is unknown"),
     ):
         frame = pd.read_csv(path)
         if source_id == "Stooq_SPX":
@@ -110,7 +132,7 @@ def main() -> int:
     gate = validate_historical_dataset(market, macro=macro, events=events, manifests=manifests)
     limitations = [
         "GDELT 1.0 daily event coverage begins in 2015-02-19; it is not a 2000-2015-02-18 event source",
-        "GDELT 1.0 publication time is not stored per event; availability uses a conservative next-day 12:00 UTC boundary",
+        "GDELT 1.0 publication time is not stored per event; availability uses the conservative next-day 06:00 America/New_York boundary with DST-aware conversion to UTC",
         "SEC adapter is an RSS snapshot and does not provide a verified 2000-2025 archive",
     ]
     result = {

@@ -13,10 +13,10 @@ from market_predictor.data_sources import align_fred_point_in_time
 from market_predictor.dataset import load_market, materialize_macro
 from market_predictor.event_io import load_events_csv
 from market_predictor.final_financial_report import build_final_financial_report, write_financial_report
+from market_predictor.gdelt1 import GDELT_SOURCE_ID
 from market_predictor.lockbox_manifest import LockboxManifest
 from market_predictor.pipeline import PROTOCOL_VERSION, run_final_lockbox_event_experiments
 from market_predictor.reproducibility import canonical_json_hash
-
 
 FRED_SERIES = ("FEDFUNDS", "DGS10", "CPIAUCSL", "UNRATE", "VIXCLS")
 
@@ -56,17 +56,25 @@ def _staging_fingerprint(staging: Path) -> str:
 
 
 def _assert_required_gdelt_coverage(staging: Path) -> None:
-    """Refuse final evaluation if the required GDELT recovery manifest is non-empty."""
+    """Refuse final evaluation if required GDELT 1.0 source-days remain missing."""
     path = staging / "raw" / "events_gdelt_missing.csv"
     if not path.exists() or path.stat().st_size == 0:
         return
     missing = pd.read_csv(path)
     if missing.empty:
         return
-    required = missing.loc[missing.get("source_id", "") == "GDELT_2_Event_Database"] if "source_id" in missing.columns else missing
+    if "source_id" not in missing.columns:
+        raise RuntimeError("Final lockbox refused: GDELT missing manifest lacks source_id; cannot prove canonical source coverage.")
+    unexpected_sources = set(missing["source_id"].dropna().astype(str)) - {GDELT_SOURCE_ID}
+    if unexpected_sources:
+        raise RuntimeError(
+            "Final lockbox refused: unsupported GDELT source identifiers remain in missing manifest: "
+            + ", ".join(sorted(unexpected_sources))
+        )
+    required = missing.loc[missing["source_id"].astype(str) == GDELT_SOURCE_ID]
     if not required.empty:
         raise RuntimeError(
-            f"Final lockbox refused: {len(required)} required GDELT source-days remain missing. "
+            f"Final lockbox refused: {len(required)} required GDELT 1.0 source-days remain missing. "
             "Resolve the historical ingestion gaps before generating A/B/C or the financial report."
         )
 
