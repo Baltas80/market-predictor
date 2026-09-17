@@ -1,4 +1,4 @@
-"""Recover only source-days recorded as missing by the GDELT ingestion pass.
+"""Recover only source-days recorded as missing by the GDELT 1.0 ingestion pass.
 
 Recovery is deliberately gap-driven: it never reruns successful days and never
 fills a missing day with an estimate. A day that remains unavailable is kept in
@@ -15,9 +15,9 @@ import pandas as pd
 import requests
 
 try:
-    from scripts.ingest_gdelt_chunk import load_gdelt_day
+    from scripts.ingest_gdelt_chunk import GDELT_SOURCE_ID, load_gdelt_day, gdelt1_daily_availability
 except ModuleNotFoundError:
-    from ingest_gdelt_chunk import load_gdelt_day
+    from ingest_gdelt_chunk import GDELT_SOURCE_ID, load_gdelt_day, gdelt1_daily_availability
 from market_predictor.research_schema import deduplicate_events, normalize_event_sources
 
 RECOVERY_RETRIES = 4
@@ -54,13 +54,14 @@ def recover_day(day: str) -> tuple[pd.DataFrame | None, dict[str, str] | None]:
                 raw = raw.rename(columns={"global_event_id": "event_id"})
             if "event_time" not in raw and "sql_date" in raw:
                 raw["event_time"] = raw["sql_date"]
-            # GDELT DATEADDED is an information-availability timestamp, not
-            # article publication time. Publication therefore remains unknown.
+            # Publication time is unknown. The daily archive's next-day 06:00
+            # US Eastern publication boundary is used as the conservative PIT
+            # availability timestamp; SQLDATE and 8-digit DATEADDED are never
+            # used as availability.
             if "published_at" not in raw:
                 raw["published_at"] = pd.NaT
-            if "available_at" not in raw and "date_added" in raw:
-                raw["available_at"] = raw["date_added"]
-            normalized = normalize_event_sources(raw, source_id="GDELT_2_Event_Database")
+            raw["available_at"] = gdelt1_daily_availability(day)
+            normalized = normalize_event_sources(raw, source_id=GDELT_SOURCE_ID)
             before = len(normalized)
             normalized = normalized.dropna(
                 subset=["event_id", "event_time", "available_at", "severity"]
@@ -80,7 +81,7 @@ def recover_day(day: str) -> tuple[pd.DataFrame | None, dict[str, str] | None]:
     assert last_error is not None
     return None, {
         "date": pd.Timestamp(day).date().isoformat(),
-        "source_id": "GDELT_2_Event_Database",
+        "source_id": GDELT_SOURCE_ID,
         "status": "missing",
         "error_type": type(last_error).__name__,
         "error": str(last_error),
@@ -113,13 +114,13 @@ def main() -> int:
         )
 
     for date, source_id in sorted(gaps):
-        if source_id != "GDELT_2_Event_Database":
+        if source_id != GDELT_SOURCE_ID:
             remaining.append({
                 "date": date,
                 "source_id": source_id,
                 "status": "missing",
                 "error_type": "UnsupportedRecoverySource",
-                "error": "Recovery supports GDELT source-days only",
+                "error": "Recovery supports GDELT 1.0 source-days only",
             })
             continue
         frame, residual = recover_day(date)
