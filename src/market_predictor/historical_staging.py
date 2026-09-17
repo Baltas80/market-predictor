@@ -1,7 +1,6 @@
 """Reproducible staging orchestration for the 2000-2025 research dataset."""
 from __future__ import annotations
 
-from dataclasses import asdict
 import json
 from pathlib import Path
 from typing import Callable
@@ -13,8 +12,8 @@ from .historical_ingestion import SourceManifest, build_source_manifest, write_s
 from .historical_coverage import DATASET_START, DATASET_END, GDELT_SOURCE
 from .historical_gate import validate_historical_dataset
 
-
 STAGING_VERSION = "2026-09-06-staging-v2"
+GDELT_PRODUCTION_SOURCE_ID = "GDELT_1_Event_Database"
 
 
 def _write_frame(frame: pd.DataFrame, path: Path, *, index: bool = False) -> None:
@@ -50,11 +49,7 @@ def stage_historical(
     gdelt_fetcher: Callable[[str, str], pd.DataFrame] = fetch_gdelt,
     sec_fetcher: Callable[[], pd.DataFrame] = fetch_sec,
 ) -> dict[str, object]:
-    """Execute all staging phases and admit data only after Historical Gate.
-
-    The function is dependency-injected for deterministic CI tests. Production
-    callers use the real Stooq/Yahoo, FRED, GDELT and SEC adapters by default.
-    """
+    """Execute all staging phases and admit data only after Historical Gate."""
     if not fred_api_key:
         raise RuntimeError("FRED_API_KEY is required for historical staging")
 
@@ -86,14 +81,13 @@ def stage_historical(
     _write_frame(market, raw_dir / "market.csv", index=True)
     stage_map["download"]["status"] = "complete"
     stage_map["raw"]["status"] = "complete"
-    market_manifest = _coverage_manifest(
+    manifests.append(_coverage_manifest(
         market,
         source_id=market_source_id,
         source_type="market",
         source_uri=market_source_uri,
         availability_policy="daily cash-session close represented in UTC",
-    )
-    manifests.append(market_manifest)
+    ))
     _write_frame(market, normalized_dir / "market.csv", index=True)
 
     macro = fred_fetcher(fred_api_key, DATASET_START.isoformat(), DATASET_END.isoformat())
@@ -107,14 +101,13 @@ def stage_historical(
                 f"FRED {series_id} PIT history starts on {pit_start}; observations before that date are unavailable from FRED/ALFRED and were not backfilled with revised values"
             )
     _write_frame(macro, raw_dir / "macro_fred.csv")
-    macro_manifest = _coverage_manifest(
+    manifests.append(_coverage_manifest(
         macro,
         source_id="FRED_required_series",
         source_type="macro",
         source_uri="https://api.stlouisfed.org/fred/series/observations",
         availability_policy="FRED realtime_start/vintage_start discovered from series/vintagedates; conservative decision-time lag is applied downstream",
-    )
-    manifests.append(macro_manifest)
+    ))
     _write_frame(macro, normalized_dir / "macro.csv")
     stage_map["normalize"]["status"] = "complete"
     stage_map["pit"]["status"] = "complete"
@@ -122,15 +115,22 @@ def stage_historical(
     event_frames: list[pd.DataFrame] = []
     if include_gdelt:
         gdelt = gdelt_fetcher(GDELT_SOURCE.start.isoformat(), DATASET_END.isoformat())
+        if not gdelt.empty:
+            unexpected_sources = set(gdelt.get("source", pd.Series(dtype=str)).dropna().astype(str)) - {GDELT_PRODUCTION_SOURCE_ID}
+            if unexpected_sources:
+                raise RuntimeError(
+                    "Historical staging refused non-canonical GDELT source identifiers: "
+                    + ", ".join(sorted(unexpected_sources))
+                )
         _write_frame(gdelt, raw_dir / "events_gdelt.csv")
         _write_frame(gdelt, normalized_dir / "events_gdelt.csv")
         if not gdelt.empty:
             manifests.append(_coverage_manifest(
                 gdelt,
-                source_id="GDELT_2_Event_Database",
+                source_id=GDELT_PRODUCTION_SOURCE_ID,
                 source_type="events",
                 source_uri="https://data.gdeltproject.org/events/{date}.export.CSV.zip",
-                availability_policy="DATEADDED is retained as availability proxy; publication time is unknown",
+                availability_policy="GDELT 1.0 daily archive: conservative next-day 06:00 America/New_York boundary, DST-aware; original article publication time is unknown",
             ))
             event_frames.append(gdelt)
         else:
