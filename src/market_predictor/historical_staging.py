@@ -116,7 +116,9 @@ def stage_historical(
     if include_gdelt:
         gdelt = gdelt_fetcher(GDELT_SOURCE.start.isoformat(), DATASET_END.isoformat())
         if not gdelt.empty:
-            unexpected_sources = set(gdelt.get("source", pd.Series(dtype=str)).dropna().astype(str)) - {GDELT_PRODUCTION_SOURCE_ID}
+            if "source_id" not in gdelt.columns:
+                raise RuntimeError("Historical staging refused GDELT data without canonical source_id")
+            unexpected_sources = set(gdelt["source_id"].dropna().astype(str)) - {GDELT_PRODUCTION_SOURCE_ID}
             if unexpected_sources:
                 raise RuntimeError(
                     "Historical staging refused non-canonical GDELT source identifiers: "
