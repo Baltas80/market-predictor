@@ -13,7 +13,7 @@ import zipfile
 import pandas as pd
 import requests
 
-from .data_sources import _get, load_fred_observations, load_sec_litigation_releases_rss, load_stooq_daily
+from .data_sources import _get, gdelt_events_to_market_events, load_fred_observations, load_sec_litigation_releases_rss, load_stooq_daily
 from .gdelt1 import GDELT_SOURCE_ID, load_gdelt_day
 from .research_schema import deduplicate_events, normalize_event_sources
 
@@ -125,7 +125,7 @@ def fetch_fred(api_key: str, start: str, end: str) -> pd.DataFrame:
 
 
 def fetch_gdelt(start: str, end: str) -> pd.DataFrame:
-    """Retrieve GDELT 1.0 daily events using the canonical loader."""
+    """Retrieve GDELT 1.0 daily events through the canonical PIT loader."""
     start_date = pd.Timestamp(start).date()
     end_date = pd.Timestamp(end).date()
     if end_date < start_date:
@@ -139,13 +139,7 @@ def fetch_gdelt(start: str, end: str) -> pd.DataFrame:
         for attempt in range(1, GDELT_DAY_RETRIES + 1):
             try:
                 raw_day = load_gdelt_day(current)
-                normalized = raw_day.copy()
-                if "event_id" not in normalized and "global_event_id" in normalized:
-                    normalized = normalized.rename(columns={"global_event_id": "event_id"})
-                normalized["event_time"] = normalized["sql_date"]
-                normalized["published_at"] = pd.NaT
-                if "available_at" not in normalized:
-                    raise ValueError("canonical GDELT 1.0 loader returned no explicit available_at")
+                normalized = gdelt_events_to_market_events(raw_day)
                 normalized = normalize_event_sources(normalized, source_id=GDELT_SOURCE_ID)
                 normalized = normalized.dropna(subset=["event_id", "event_time", "available_at", "severity"]).copy()
                 frames.append(normalized)
