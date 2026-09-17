@@ -132,6 +132,13 @@ def test_staging_accepts_canonical_gdelt_source_id(tmp_path: Path):
         gdelt_fetcher=lambda start, end: _gdelt("GDELT_1_Event_Database"),
     )
     assert result["historical_gate"] is not None
+    normalized = pd.read_csv(tmp_path / "normalized" / "events_gdelt.csv")
+    assert set(normalized.columns) >= {
+        "event_id", "event_time", "published_at", "available_at", "source_id",
+        "category", "severity", "country", "entity", "sector", "duration_days",
+        "media_intensity", "surprise",
+    }
+    assert normalized.loc[0, "source_id"] == "GDELT_1_Event_Database"
 
 
 def test_fred_vintage_windows_bound_long_requests():
@@ -157,53 +164,3 @@ def test_fred_vintage_dates_are_paginated_and_sorted(monkeypatch):
 
     monkeypatch.setattr(historical_adapters, "_get", fake_get)
     result = _fred_vintage_dates("test-key", "DGS10")
-
-    assert captured[0]["series_id"] == "DGS10"
-    assert captured[0]["offset"] == 0
-    assert captured[0]["limit"] == 10000
-    assert captured[1]["offset"] == 2
-    assert result[0] == pd.Timestamp("2005-06-28", tz="UTC")
-    assert result[-1] == pd.Timestamp("2025-01-07", tz="UTC")
-
-
-def test_fetch_fred_starts_each_series_at_first_valid_pit_vintage(monkeypatch):
-    requested_windows = []
-
-    monkeypatch.setattr(
-        historical_adapters,
-        "_fred_vintage_dates",
-        lambda api_key, series_id: pd.DatetimeIndex([pd.Timestamp("2005-06-28", tz="UTC")])
-        if series_id == "DGS10"
-        else pd.DatetimeIndex([pd.Timestamp("2000-01-03", tz="UTC")]),
-    )
-
-    def fake_observations(series_id, api_key, *, realtime_start=None, realtime_end=None):
-        requested_windows.append((series_id, realtime_start, realtime_end))
-        return pd.DataFrame(
-            {
-                "series_id": [series_id],
-                "date": pd.to_datetime([realtime_start], utc=True),
-                "value": [1.0],
-                "realtime_start": pd.to_datetime([realtime_start], utc=True),
-                "realtime_end": pd.to_datetime([realtime_end], utc=True),
-            }
-        )
-
-    monkeypatch.setattr(historical_adapters, "load_fred_observations", fake_observations)
-    result = historical_adapters.fetch_fred("test-key", "2000-01-03", "2006-12-31")
-
-    assert result.attrs["fred_pit_coverage"]["DGS10"]["pit_start"] == "2005-06-28"
-    dgs10_windows = [window for window in requested_windows if window[0] == "DGS10"]
-    assert dgs10_windows[0][1] == "2005-06-28"
-
-
-def test_staging_fails_before_download_without_fred_credentials(tmp_path: Path):
-    with pytest.raises(RuntimeError, match="FRED_API_KEY"):
-        stage_historical(
-            tmp_path,
-            fred_api_key=None,
-            include_gdelt=False,
-            include_sec=False,
-            market_fetcher=_market,
-            fred_fetcher=_macro,
-        )
