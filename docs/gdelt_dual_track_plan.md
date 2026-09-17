@@ -4,9 +4,9 @@
 
 The production historical lockbox uses the official GDELT 1.0 daily event stream at `events/{YYYYMMDD}.export.CSV.zip` while GDELT 2.0 is independently acquired and validated.
 
-GDELT 1.0 daily files are named for the previous day's event-discovery date and posted the following morning. The pipeline therefore never treats `SQLDATE` or the 8-digit file date as availability. It assigns a conservative availability boundary of **12:00 UTC on the day after the file date**. Original article publication time remains unknown.
+GDELT 1.0 daily files are named for the previous day's event-discovery date and posted the following morning. The pipeline therefore never treats `SQLDATE` or the 8-digit file date as availability. It assigns a conservative availability boundary of **06:00 America/New_York on the day after the file date**, with timezone rules resolved using the IANA `America/New_York` zone and converted to UTC. Original article publication time remains unknown.
 
-The production source ID is `GDELT_1_Daily_Event_Database`.
+The production source ID is `GDELT_1_Event_Database`.
 
 ## Track B — independent GDELT 2.0 acquisition
 
