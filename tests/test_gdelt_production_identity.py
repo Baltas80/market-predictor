@@ -37,6 +37,7 @@ def _gdelt(start: str, end: str) -> pd.DataFrame:
             "event_time": pd.to_datetime(["2024-01-01"], utc=True),
             "published_at": pd.NaT,
             "available_at": pd.to_datetime(["2024-01-02T11:00:00Z"], utc=True),
+            "source_id": ["GDELT_1_Event_Database"],
             "category": ["political_crisis"],
             "severity": [0.5],
             "country": ["US"],
