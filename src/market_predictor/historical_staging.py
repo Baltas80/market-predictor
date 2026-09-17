@@ -13,8 +13,8 @@ from .historical_ingestion import SourceManifest, build_source_manifest, write_s
 from .historical_coverage import DATASET_START, DATASET_END, GDELT_SOURCE
 from .historical_gate import validate_historical_dataset
 
-
 STAGING_VERSION = "2026-09-06-staging-v2"
+GDELT_PRODUCTION_SOURCE_ID = "GDELT_1_Event_Database"
 
 
 def _write_frame(frame: pd.DataFrame, path: Path, *, index: bool = False) -> None:
@@ -125,12 +125,18 @@ def stage_historical(
         _write_frame(gdelt, raw_dir / "events_gdelt.csv")
         _write_frame(gdelt, normalized_dir / "events_gdelt.csv")
         if not gdelt.empty:
+            unexpected_sources = set(gdelt.get("source", pd.Series(dtype=str)).dropna().astype(str)) - {GDELT_PRODUCTION_SOURCE_ID}
+            if unexpected_sources:
+                raise RuntimeError(
+                    "Historical staging refused non-canonical GDELT source identifiers: "
+                    + ", ".join(sorted(unexpected_sources))
+                )
             manifests.append(_coverage_manifest(
                 gdelt,
-                source_id="GDELT_2_Event_Database",
+                source_id=GDELT_PRODUCTION_SOURCE_ID,
                 source_type="events",
                 source_uri="https://data.gdeltproject.org/events/{date}.export.CSV.zip",
-                availability_policy="DATEADDED is retained as availability proxy; publication time is unknown",
+                availability_policy="GDELT 1.0 daily archive: conservative next-day 06:00 America/New_York boundary, DST-aware; original article publication time is unknown",
             ))
             event_frames.append(gdelt)
         else:
