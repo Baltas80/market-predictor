@@ -15,7 +15,13 @@ import zipfile
 import pandas as pd
 import requests
 
-from market_predictor.gdelt1 import GDELT_SOURCE_ID, gdelt1_daily_availability, load_gdelt_day
+from market_predictor.gdelt1 import (
+    GDELT_EXPORT_COLUMNS_61,
+    GDELT_SOURCE_ID,
+    _parse_gdelt_date_added,
+    gdelt1_daily_availability,
+    load_gdelt_day,
+)
 from market_predictor.research_schema import deduplicate_events, normalize_event_sources
 
 GDELT_DAY_RETRIES = 4
@@ -52,7 +58,6 @@ def fetch_gdelt_chunk(start: str, end: str, checkpoint_dir: Path | None = None) 
     end_date = pd.Timestamp(end).date()
     if end_date < start_date:
         raise ValueError("GDELT end must be on or after start")
-
     checkpoint_dir = checkpoint_dir or Path("data/gdelt_checkpoints")
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     frames: list[pd.DataFrame] = []
@@ -114,7 +119,6 @@ def fetch_gdelt_chunk(start: str, end: str, checkpoint_dir: Path | None = None) 
         if last_error is not None:
             missing.append({"date": current.isoformat(), "source_id": GDELT_SOURCE_ID, "status": "missing", "error_type": type(last_error).__name__, "error": str(last_error)})
             print(f"GDELT gap recorded for {current.isoformat()} after {GDELT_DAY_RETRIES} attempts; continuing chunk", flush=True)
-
         completed += 1
         if completed == 1 or completed % 25 == 0 or completed == total_days:
             print(f"GDELT staging progress: {completed}/{total_days} days ({completed / total_days:.1%}); restored={restored}", flush=True)
