@@ -57,6 +57,12 @@ def _gdelt(source_id: str) -> pd.DataFrame:
             "source_id": [source_id],
             "category": ["political_crisis"],
             "severity": [0.5],
+            "country": [None],
+            "entity": [None],
+            "sector": [None],
+            "duration_days": [0.0],
+            "media_intensity": [1.0],
+            "surprise": [0.0],
         }
     )
 
