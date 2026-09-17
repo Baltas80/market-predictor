@@ -65,8 +65,8 @@ jobs:
           path: data/historical
       - name: Execute A/B without final lockbox
         run: python scripts/run_progressive_ab.py
-      - name: Focused A/B tests
-        run: python -m pytest -q tests/test_pipeline.py tests/test_ablation.py
+      - name: Focused existing A/B, PIT and data tests
+        run: python -m pytest -q tests/test_features.py tests/test_dataset.py tests/test_experiments.py tests/test_fred_pit.py
       - uses: actions/upload-artifact@v7
         if: always()
         with:
