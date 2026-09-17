@@ -30,6 +30,6 @@ def test_legacy_daily_loader_is_backed_by_canonical_source(monkeypatch):
     )
     monkeypatch.setattr("scripts.ingest_gdelt_daily_chunk.load_gdelt_day", lambda day: raw.copy())
     frame = load_gdelt_daily_day("2015-02-19")
-    assert frame.loc[0, "source"] == GDELT_SOURCE_ID
+    assert frame.loc[0, "source_id"] == GDELT_SOURCE_ID
     assert frame.loc[0, "availability_proxy"] == "daily_archive_publication_boundary"
     assert pd.isna(frame.loc[0, "published_at"])
