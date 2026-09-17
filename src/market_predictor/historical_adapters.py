@@ -23,24 +23,20 @@ from .data_sources import (
 )
 from .research_schema import deduplicate_events, normalize_event_sources
 
-# DFF is a valid FRED series but does not expose the ALFRED real-time history
-# required by this point-in-time pipeline. FEDFUNDS is retained as the
-# historical federal-funds-rate proxy with actual vintage support.
 FRED_SERIES = ("FEDFUNDS", "DGS10", "CPIAUCSL", "UNRATE", "VIXCLS")
 FRED_VINTAGE_DATES_URL = "https://api.stlouisfed.org/fred/series/vintagedates"
 FRED_VINTAGE_DATES_PAGE_SIZE = 10000
 FRED_VINTAGE_CHUNK_DAYS = 365
 GDELT_DAY_RETRIES = 4
 GDELT_RETRY_BASE_SECONDS = 2
+FRED_REQUEST_MIN_INTERVAL_SECONDS = 0.55
 
 
 def fetch_market(start: str, end: str) -> pd.DataFrame:
-    """Retrieve the canonical Stooq daily market frame."""
     return load_stooq_daily("^spx", start=start, end=end)
 
 
 def _fred_vintage_windows(start: str, end: str) -> list[tuple[str, str]]:
-    """Split a long real-time period into bounded FRED vintage windows."""
     first = pd.Timestamp(start).normalize()
     last = pd.Timestamp(end).normalize()
     if last < first:
@@ -55,16 +51,10 @@ def _fred_vintage_windows(start: str, end: str) -> list[tuple[str, str]]:
 
 
 def _fred_vintage_dates(api_key: str, series_id: str) -> pd.DatetimeIndex:
-    """Return all FRED/ALFRED vintage dates for a series, with pagination.
-
-    The historical PIT anchor may predate the requested dataset start. FRED's
-    documentation defines vintage dates as dates when values were revised or
-    released, so we retrieve the complete list and let ``fetch_fred`` select
-    the vintage that was already in effect at the requested start date.
-    """
     offset = 0
     dates: list[str] = []
     while True:
+        time.sleep(FRED_REQUEST_MIN_INTERVAL_SECONDS)
         params = {
             "series_id": series_id,
             "api_key": api_key,
@@ -81,7 +71,6 @@ def _fred_vintage_dates(api_key: str, series_id: str) -> pd.DatetimeIndex:
         if not batch or offset + len(batch) >= total:
             break
         offset += len(batch)
-
     if not dates:
         return pd.DatetimeIndex([], tz="UTC")
     parsed = pd.to_datetime(dates, utc=True, errors="coerce")
@@ -90,7 +79,6 @@ def _fred_vintage_dates(api_key: str, series_id: str) -> pd.DatetimeIndex:
 
 
 def _raise_fred_error(exc: requests.HTTPError, *, series_id: str, realtime_start: str, realtime_end: str) -> None:
-    """Replace opaque HTTP 400 errors with FRED's actual API error message."""
     response = exc.response
     status = response.status_code if response is not None else "unknown"
     detail = ""
@@ -109,33 +97,23 @@ def _raise_fred_error(exc: requests.HTTPError, *, series_id: str, realtime_start
 
 
 def fetch_fred(api_key: str, start: str, end: str) -> pd.DataFrame:
-    """Retrieve all required FRED vintages using series-specific PIT availability."""
     if not api_key or not api_key.strip():
         raise ValueError("FRED_API_KEY is missing or empty")
-
     requested_start = pd.Timestamp(start).normalize()
     requested_end = pd.Timestamp(end).normalize()
     if requested_end < requested_start:
         raise ValueError("FRED end must be on or after start")
-
     frames: list[pd.DataFrame] = []
     coverage: dict[str, dict[str, str]] = {}
     for series_id in FRED_SERIES:
         try:
             vintage_dates = _fred_vintage_dates(api_key, series_id)
         except requests.HTTPError as exc:
-            _raise_fred_error(
-                exc,
-                series_id=series_id,
-                realtime_start=start,
-                realtime_end=end,
-            )
-
+            _raise_fred_error(exc, series_id=series_id, realtime_start=start, realtime_end=end)
         if vintage_dates.empty:
             raise RuntimeError(
                 f"FRED series {series_id} has no PIT vintage dates; refusing to substitute current revised values."
             )
-
         requested_start_utc = requested_start.tz_localize("UTC")
         requested_end_utc = requested_end.tz_localize("UTC")
         prior_or_equal = vintage_dates[vintage_dates <= requested_start_utc]
@@ -146,21 +124,20 @@ def fetch_fred(api_key: str, start: str, end: str) -> pd.DataFrame:
             effective_start = future.min().tz_localize(None).normalize()
         else:
             raise RuntimeError(
-                f"FRED series {series_id} has no PIT vintage available on or before "
-                f"{end}; refusing to backfill the requested range with revised current data."
+                f"FRED series {series_id} has no PIT vintage available on or before {end}; "
+                "refusing to backfill the requested range with revised current data."
             )
-
         coverage[series_id] = {
             "requested_start": requested_start.date().isoformat(),
             "pit_start": effective_start.date().isoformat(),
             "first_vintage": vintage_dates.min().date().isoformat(),
             "last_vintage_in_history": vintage_dates.max().date().isoformat(),
         }
-
         for realtime_start, realtime_end in _fred_vintage_windows(
             effective_start.date().isoformat(), requested_end.date().isoformat()
         ):
             try:
+                time.sleep(FRED_REQUEST_MIN_INTERVAL_SECONDS)
                 frame = load_fred_observations(
                     series_id,
                     api_key,
@@ -168,12 +145,7 @@ def fetch_fred(api_key: str, start: str, end: str) -> pd.DataFrame:
                     realtime_end=realtime_end,
                 ).copy()
             except requests.HTTPError as exc:
-                _raise_fred_error(
-                    exc,
-                    series_id=series_id,
-                    realtime_start=realtime_start,
-                    realtime_end=realtime_end,
-                )
+                _raise_fred_error(exc, series_id=series_id, realtime_start=realtime_start, realtime_end=realtime_end)
             if frame.empty:
                 continue
             frame["series_id"] = series_id
@@ -181,29 +153,20 @@ def fetch_fred(api_key: str, start: str, end: str) -> pd.DataFrame:
             frame["vintage_start"] = pd.to_datetime(frame["realtime_start"], utc=True).dt.normalize()
             frame["vintage_end"] = pd.to_datetime(frame["realtime_end"], utc=True).dt.normalize()
             frames.append(frame[["series_id", "observation_date", "value", "vintage_start", "vintage_end"]])
-
     if not frames:
         return pd.DataFrame(columns=["series_id", "observation_date", "value", "vintage_start", "vintage_end"])
     result = pd.concat(frames, ignore_index=True)
-    result = result.drop_duplicates(["series_id", "observation_date", "vintage_start"]).sort_values(
+    result.attrs["fred_pit_coverage"] = coverage
+    return result.drop_duplicates(["series_id", "observation_date", "vintage_start"]).sort_values(
         ["series_id", "observation_date", "vintage_start"]
     ).reset_index(drop=True)
-    result.attrs["fred_pit_coverage"] = coverage
-    return result
 
 
 def fetch_gdelt(start: str, end: str) -> pd.DataFrame:
-    """Retrieve and normalize GDELT day-by-day with bounded retries.
-
-    Each successful day is normalized immediately instead of retaining all raw
-    GDELT columns in memory until the end of the range. This materially lowers
-    peak memory use while preserving the same final cross-day deduplication.
-    """
     start_date = pd.Timestamp(start).date()
     end_date = pd.Timestamp(end).date()
     if end_date < start_date:
         raise ValueError("GDELT end must be on or after start")
-
     frames: list[pd.DataFrame] = []
     total_days = (end_date - start_date).days + 1
     current = start_date
@@ -214,9 +177,7 @@ def fetch_gdelt(start: str, end: str) -> pd.DataFrame:
             try:
                 raw_day = load_gdelt_day(current)
                 normalized_day = gdelt_events_to_market_events(raw_day)
-                normalized_day = normalize_event_sources(
-                    normalized_day, source_id="GDELT_2_Event_Database"
-                )
+                normalized_day = normalize_event_sources(normalized_day, source_id="GDELT_2_Event_Database")
                 frames.append(normalized_day)
                 last_error = None
                 break
@@ -244,16 +205,11 @@ def fetch_gdelt(start: str, end: str) -> pd.DataFrame:
                 flush=True,
             )
         current += timedelta(days=1)
-
     combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     return deduplicate_events(combined)
 
 
 def fetch_sec() -> pd.DataFrame:
-    """Retrieve the SEC litigation RSS feed.
-
-    The feed is a current-source snapshot, not a 2000-2025 historical archive;
-    callers must record that coverage limitation in staging metadata.
-    """
+    """Retrieve the SEC litigation RSS feed."""
     raw = load_sec_litigation_releases_rss()
     return deduplicate_events(normalize_event_sources(raw, source_id="SEC_Litigation_Releases"))
