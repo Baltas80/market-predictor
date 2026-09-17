@@ -1,5 +1,5 @@
 version: 3
-updated_at: 2026-09-12
+updated_at: 2026-09-17
 purpose: point_in_time_market_prediction
 sources:
   market:
@@ -31,8 +31,8 @@ sources:
     coverage_start: 2015-02-19
     coverage_end: 2025-12-31
     availability_field: conservative_next_day_boundary
-    availability_timezone: UTC
-    production_availability_policy: 12:00 UTC on day after file date
+    availability_timezone: America/New_York
+    production_availability_policy: 06:00 America/New_York on day after file date
     publication_time: unknown
     deduplication_key: GLOBALEVENTID
     primary_use: geopolitical_and_event_features
