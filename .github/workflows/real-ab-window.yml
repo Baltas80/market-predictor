@@ -34,8 +34,8 @@ jobs:
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: python scripts/run_real_ab_window.py
-      - name: Run focused regression and PIT tests
-        run: python -m pytest -q tests/test_features.py tests/test_dataset.py tests/test_ablation.py tests/test_pipeline.py tests/test_fred_pit.py
+      - name: Run existing focused regression and PIT tests
+        run: python -m pytest -q tests/test_features.py tests/test_dataset.py tests/test_experiments.py tests/test_fred_pit.py
       - name: Publish real A/B artifacts
         uses: actions/upload-artifact@v7
         if: always()
