@@ -64,7 +64,7 @@ def test_historical_staging_uses_gdelt1_identity_and_pit_policy(tmp_path: Path) 
         gdelt_fetcher=_gdelt,
     )
 
-    assert result["status"] == "admissible"
+    assert result["status"] == "admissible_with_source_limits"
     manifest = (tmp_path / "source_manifest.json").read_text(encoding="utf-8")
     assert "GDELT_1_Event_Database" in manifest
     assert "GDELT_2_Event_Database" not in manifest
