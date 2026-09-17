@@ -22,7 +22,9 @@ def test_recover_day_keeps_gdelt_publication_unknown_and_maps_pit_times(monkeypa
     assert frame.loc[0, "event_id"] == "g1"
     assert frame.loc[0, "event_time"] == pd.Timestamp("2015-02-19", tz="UTC")
     assert pd.isna(frame.loc[0, "published_at"])
-    assert frame.loc[0, "available_at"] == pd.Timestamp("2015-02-19 12:00", tz="UTC")
+    # GDELT 1.0 daily archives use the conservative next-day 06:00
+    # America/New_York publication boundary for PIT availability.
+    assert frame.loc[0, "available_at"] == pd.Timestamp("2015-02-20 11:00", tz="UTC")
 
 
 def test_recover_day_keeps_structural_failure_as_residual(monkeypatch):
@@ -45,7 +47,7 @@ def test_recover_day_rejects_all_rows_dropped_by_pit_filter(monkeypatch):
     raw = pd.DataFrame(
         {
             "global_event_id": ["g1"],
-            "sql_date": [pd.Timestamp("2015-02-19", tz="UTC")],
+            "sql_date": [pd.NaT],
             "date_added": [pd.NaT],
             "category": ["political_crisis"],
             "severity": [0.5],
