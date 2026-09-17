@@ -127,10 +127,10 @@ def stage_historical(
         if not gdelt.empty:
             manifests.append(_coverage_manifest(
                 gdelt,
-                source_id="GDELT_2_Event_Database",
+                source_id="GDELT_1_Event_Database",
                 source_type="events",
                 source_uri="https://data.gdeltproject.org/events/{date}.export.CSV.zip",
-                availability_policy="DATEADDED is retained as availability proxy; publication time is unknown",
+                availability_policy="Conservative next-day 06:00 America/New_York publication boundary; DATEADDED retained only as original source data",
             ))
             event_frames.append(gdelt)
         else:
