@@ -1,157 +1,26 @@
-"""Download one bounded GDELT 1.0 historical chunk with resumable daily checkpoints.
+"""Download bounded GDELT 1.0 historical chunks with resumable checkpoints.
 
-GDELT 1.0 ``events/`` is a daily stream. Its archive date is the event day,
-while publication is a later batch boundary. The pipeline therefore uses a
-conservative next-day 06:00 America/New_York availability timestamp instead
-of interpreting the 8-digit DATEADDED field as a 14-digit availability time.
+The source parser and PIT boundary are canonicalized in
+``market_predictor.gdelt1``. This script owns only chunking, retries,
+checkpointing and gap reporting.
 """
 from __future__ import annotations
 
 import argparse
-from datetime import timedelta, time as dt_time
-from decimal import Decimal, InvalidOperation
-from io import BytesIO
+from datetime import timedelta
 from pathlib import Path
 import time
 import zipfile
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
 
-from market_predictor.data_sources import _gdelt_category
+from market_predictor.gdelt1 import GDELT_SOURCE_ID, gdelt1_daily_availability, load_gdelt_day
 from market_predictor.research_schema import deduplicate_events, normalize_event_sources
 
 GDELT_DAY_RETRIES = 4
 GDELT_RETRY_BASE_SECONDS = 2
-GDELT_CHECKPOINT_VERSION = "gdelt1-pit-v3"
-GDELT_SOURCE_ID = "GDELT_1_Event_Database"
-GDELT_PUBLICATION_HOUR_EST = 6
-GDELT_NEW_YORK = ZoneInfo("America/New_York")
-
-GDELT_EXPORT_COLUMNS_61 = [
-    "global_event_id", "sql_date", "month_year", "year", "fraction_date",
-    "actor1_code", "actor1_name", "actor1_country", "actor1_known_group",
-    "actor1_ethnic", "actor1_religion1", "actor1_religion2", "actor1_type1",
-    "actor1_type2", "actor1_type3", "actor2_code", "actor2_name",
-    "actor2_country", "actor2_known_group", "actor2_ethnic", "actor2_religion1",
-    "actor2_religion2", "actor2_type1", "actor2_type2", "actor2_type3",
-    "is_root_event", "event_code", "event_base_code", "event_root_code",
-    "quad_class", "goldstein_scale", "num_mentions", "num_sources",
-    "num_articles", "avg_tone", "actor1_geo_type", "actor1_geo_fullname",
-    "actor1_geo_country", "actor1_geo_adm1", "actor1_geo_adm2",
-    "actor1_geo_lat", "actor1_geo_long", "actor1_geo_feature_id",
-    "actor2_geo_type", "actor2_geo_fullname", "actor2_geo_country",
-    "actor2_geo_adm1", "actor2_geo_adm2", "actor2_geo_lat", "actor2_geo_long",
-    "actor2_geo_feature_id", "action_geo_type", "action_geo_fullname",
-    "action_geo_country", "action_geo_adm1", "action_geo_adm2",
-    "action_geo_lat", "action_geo_long", "action_geo_feature_id",
-    "date_added", "source_url",
-]
-GDELT_EXPORT_COLUMNS_58 = [
-    column for column in GDELT_EXPORT_COLUMNS_61
-    if column not in {"actor1_geo_adm2", "actor2_geo_adm2", "action_geo_adm2"}
-]
-
-
-def _canonical_gdelt_date_added(value: object) -> str | None:
-    """Canonicalize exact integer-like DATEADDED encodings without rounding."""
-    if value is None or pd.isna(value):
-        return None
-    text = str(value).strip()
-    if text.isdigit() and len(text) == 14:
-        return text
-    try:
-        number = Decimal(text)
-    except (InvalidOperation, ValueError):
-        return None
-    if not number.is_finite() or number != number.to_integral_value():
-        return None
-    canonical = format(number.to_integral_value(), "f")
-    return canonical if canonical.isdigit() and len(canonical) == 14 else None
-
-
-def _parse_gdelt_date_added(series: pd.Series) -> pd.Series:
-    """Parse legacy 14-digit DATEADDED values when present; 8-digit GDELT 1.0 values are not availability timestamps."""
-    canonical = series.map(_canonical_gdelt_date_added).astype("string")
-    return pd.to_datetime(canonical, format="%Y%m%d%H%M%S", utc=True, errors="coerce")
-
-
-def gdelt1_daily_availability(day: str | pd.Timestamp) -> pd.Timestamp:
-    """Return the conservative PIT availability boundary for a GDELT 1.0 day.
-
-    GDELT 1.0 daily archives are published by 06:00 US Eastern on the day
-    following the archive/event date. Using that boundary avoids treating the
-    event date or SQLDATE as information availability.
-    """
-    archive_date = pd.Timestamp(day).date()
-    local = pd.Timestamp.combine(
-        archive_date + timedelta(days=1),
-        dt_time(hour=GDELT_PUBLICATION_HOUR_EST),
-    ).tz_localize(GDELT_NEW_YORK)
-    return local.tz_convert("UTC")
-
-
-def load_gdelt_day(day: str | pd.Timestamp) -> pd.DataFrame:
-    """Load and normalize one GDELT 1.0 daily event export."""
-    date = pd.Timestamp(day).strftime("%Y%m%d")
-    url = f"https://data.gdeltproject.org/events/{date}.export.CSV.zip"
-    response = requests.get(
-        url,
-        timeout=120,
-        headers={"User-Agent": "market-predictor/0.1 (research ingestion)"},
-    )
-    response.raise_for_status()
-    with zipfile.ZipFile(BytesIO(response.content)) as archive:
-        members = archive.namelist()
-        if not members:
-            raise ValueError(f"Empty GDELT archive for {date}")
-        member = members[0]
-        with archive.open(member) as probe:
-            first_line = probe.readline()
-        field_count = first_line.count(b"\t") + 1
-        if field_count == len(GDELT_EXPORT_COLUMNS_61):
-            columns = GDELT_EXPORT_COLUMNS_61
-        elif field_count == len(GDELT_EXPORT_COLUMNS_58):
-            columns = GDELT_EXPORT_COLUMNS_58
-        else:
-            raise ValueError(
-                f"Unsupported GDELT field count for {date}: "
-                f"{field_count} (expected 58 or 61)"
-            )
-        with archive.open(member) as handle:
-            frame = pd.read_csv(
-                handle,
-                sep="\t",
-                header=None,
-                names=columns,
-                dtype=str,
-                low_memory=False,
-            )
-
-    for column in ("actor1_geo_adm2", "actor2_geo_adm2", "action_geo_adm2"):
-        if column not in frame:
-            frame[column] = pd.NA
-    frame = frame[GDELT_EXPORT_COLUMNS_61]
-    frame["date_added"] = frame["date_added"].astype("string").str.strip()
-    frame["sql_date"] = pd.to_datetime(
-        frame["sql_date"].astype("string").str.strip(),
-        format="%Y%m%d",
-        utc=True,
-        errors="coerce",
-    )
-    for column in ["goldstein_scale", "num_mentions", "num_sources", "num_articles", "avg_tone"]:
-        frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    actor_text = frame[["actor1_name", "actor2_name", "action_geo_fullname"]].fillna("").agg(" ".join, axis=1)
-    frame["category"] = [
-        _gdelt_category(root, code, text)
-        for root, code, text in zip(frame["event_root_code"], frame["event_code"], actor_text)
-    ]
-    scale = frame["goldstein_scale"].abs().clip(0, 10) / 10
-    media = frame["num_sources"].fillna(0).clip(lower=0)
-    frame["severity"] = (0.7 * scale + 0.3 * (media / (media + 5)).clip(0, 1)).clip(0, 1)
-    frame["surprise"] = 0.0
-    return frame
+GDELT_CHECKPOINT_VERSION = "gdelt1-pit-v4"
 
 
 def _checkpoint_path(checkpoint_dir: Path, day: str) -> Path:
@@ -173,6 +42,8 @@ def _read_checkpoint(path: Path) -> pd.DataFrame:
         raise ValueError("GDELT checkpoint lacks required PIT columns; redownloading")
     if frame[required].isna().any().any():
         raise ValueError("GDELT checkpoint contains invalid PIT fields; redownloading")
+    if "source_id" in frame and frame["source_id"].ne(GDELT_SOURCE_ID).any():
+        raise ValueError("GDELT checkpoint contains a non-canonical source identifier; redownloading")
     return frame
 
 
@@ -184,7 +55,6 @@ def fetch_gdelt_chunk(start: str, end: str, checkpoint_dir: Path | None = None) 
 
     checkpoint_dir = checkpoint_dir or Path("data/gdelt_checkpoints")
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
     frames: list[pd.DataFrame] = []
     missing: list[dict[str, str]] = []
     total_days = (end_date - start_date).days + 1
@@ -201,18 +71,11 @@ def fetch_gdelt_chunk(start: str, end: str, checkpoint_dir: Path | None = None) 
                 frames.append(restored_frame)
                 restored += 1
                 completed += 1
-                print(
-                    f"GDELT checkpoint restored: {current.isoformat()} rows={len(restored_frame)} "
-                    f"({completed}/{total_days})",
-                    flush=True,
-                )
+                print(f"GDELT checkpoint restored: {current.isoformat()} rows={len(restored_frame)} ({completed}/{total_days})", flush=True)
                 current += timedelta(days=1)
                 continue
             except (OSError, pd.errors.ParserError, ValueError) as exc:
-                print(
-                    f"Invalid GDELT checkpoint for {current.isoformat()}: {type(exc).__name__}: {exc}; redownloading",
-                    flush=True,
-                )
+                print(f"Invalid GDELT checkpoint for {current.isoformat()}: {type(exc).__name__}: {exc}; redownloading", flush=True)
                 checkpoint.unlink(missing_ok=True)
 
         last_error: Exception | None = None
@@ -221,85 +84,46 @@ def fetch_gdelt_chunk(start: str, end: str, checkpoint_dir: Path | None = None) 
                 raw_day = load_gdelt_day(current)
                 if raw_day.empty:
                     raise ValueError(f"GDELT source-day {current.isoformat()} returned an empty export")
-                if "event_id" not in raw_day and "global_event_id" in raw_day:
-                    raw_day = raw_day.rename(columns={"global_event_id": "event_id"})
+                raw_day = raw_day.rename(columns={"global_event_id": "event_id"}) if "event_id" not in raw_day else raw_day
                 raw_day["event_time"] = raw_day["sql_date"]
                 raw_day["published_at"] = pd.NaT
-                raw_day["available_at"] = gdelt1_daily_availability(current)
+                if "available_at" not in raw_day:
+                    raise ValueError("canonical GDELT 1.0 loader returned no explicit available_at")
                 normalized = normalize_event_sources(raw_day, source_id=GDELT_SOURCE_ID)
                 before = len(normalized)
-                invalid_counts = {
-                    column: int(normalized[column].isna().sum())
-                    for column in ("event_id", "event_time", "available_at", "severity")
-                }
+                invalid_counts = {column: int(normalized[column].isna().sum()) for column in ("event_id", "event_time", "available_at", "severity")}
                 normalized = normalized.dropna(subset=["event_id", "event_time", "available_at", "severity"]).copy()
                 dropped_unavailable += before - len(normalized)
                 if before and len(normalized) == 0:
-                    raise ValueError(
-                        "GDELT PIT normalization rejected every row; "
-                        + ", ".join(f"{column}_nulls={count}" for column, count in invalid_counts.items())
-                    )
+                    raise ValueError("GDELT PIT normalization rejected every row; " + ", ".join(f"{column}_nulls={count}" for column, count in invalid_counts.items()))
                 normalized["checkpoint_version"] = GDELT_CHECKPOINT_VERSION
-                normalized.to_csv(
-                    checkpoint,
-                    index=False,
-                    lineterminator="\n",
-                    date_format="%Y-%m-%dT%H:%M:%S%z",
-                )
+                normalized.to_csv(checkpoint, index=False, lineterminator="\n", date_format="%Y-%m-%dT%H:%M:%S%z")
                 normalized = normalized.drop(columns=["checkpoint_version"])
                 frames.append(normalized)
                 last_error = None
-                print(
-                    f"GDELT day checkpoint saved: {current.isoformat()} rows={len(normalized)} "
-                    f"available_at={gdelt1_daily_availability(current).isoformat()}",
-                    flush=True,
-                )
+                print(f"GDELT day checkpoint saved: {current.isoformat()} rows={len(normalized)} available_at={gdelt1_daily_availability(current).isoformat()}", flush=True)
                 break
             except (requests.RequestException, TimeoutError, ValueError, zipfile.BadZipFile) as exc:
                 last_error = exc
                 if attempt >= GDELT_DAY_RETRIES:
                     break
                 delay = GDELT_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
-                print(
-                    f"GDELT retry {attempt}/{GDELT_DAY_RETRIES - 1} for {current.isoformat()} "
-                    f"after {type(exc).__name__}: {exc}; waiting {delay}s",
-                    flush=True,
-                )
+                print(f"GDELT retry {attempt}/{GDELT_DAY_RETRIES - 1} for {current.isoformat()} after {type(exc).__name__}: {exc}; waiting {delay}s", flush=True)
                 time.sleep(delay)
 
         if last_error is not None:
-            missing.append({
-                "date": current.isoformat(),
-                "source_id": GDELT_SOURCE_ID,
-                "status": "missing",
-                "error_type": type(last_error).__name__,
-                "error": str(last_error),
-            })
-            print(
-                f"GDELT gap recorded for {current.isoformat()} after {GDELT_DAY_RETRIES} attempts; continuing chunk",
-                flush=True,
-            )
+            missing.append({"date": current.isoformat(), "source_id": GDELT_SOURCE_ID, "status": "missing", "error_type": type(last_error).__name__, "error": str(last_error)})
+            print(f"GDELT gap recorded for {current.isoformat()} after {GDELT_DAY_RETRIES} attempts; continuing chunk", flush=True)
 
         completed += 1
         if completed == 1 or completed % 25 == 0 or completed == total_days:
-            print(
-                f"GDELT staging progress: {completed}/{total_days} days ({completed / total_days:.1%}); "
-                f"restored={restored}",
-                flush=True,
-            )
+            print(f"GDELT staging progress: {completed}/{total_days} days ({completed / total_days:.1%}); restored={restored}", flush=True)
         current += timedelta(days=1)
 
     combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-    result = deduplicate_events(combined) if not combined.empty else pd.DataFrame(columns=[
-        "event_id", "event_time", "published_at", "available_at", "source_id",
-        "category", "severity", "country", "entity", "sector", "duration_days",
-        "media_intensity", "surprise",
-    ])
+    result = deduplicate_events(combined) if not combined.empty else pd.DataFrame(columns=["event_id", "event_time", "published_at", "available_at", "source_id", "category", "severity", "country", "entity", "sector", "duration_days", "media_intensity", "surprise"])
     if dropped_unavailable:
-        print(
-            f"GDELT PIT filter: excluded {dropped_unavailable} rows without a valid event/availability/severity field",
-            flush=True,
-        )
+        print(f"GDELT PIT filter: excluded {dropped_unavailable} rows without a valid event/availability/severity field", flush=True)
     return result, pd.DataFrame(missing)
 
 
@@ -318,11 +142,7 @@ def main() -> int:
     frame, missing = fetch_gdelt_chunk(args.start, args.end, checkpoint_dir=checkpoint_dir)
     frame.to_csv(output, index=False, lineterminator="\n", date_format="%Y-%m-%dT%H:%M:%S%z")
     missing.to_csv(missing_output, index=False, lineterminator="\n")
-    print(
-        f"GDELT chunk saved: {args.start} -> {args.end}; rows={len(frame)}; missing_days={len(missing)}; "
-        f"restored/checkpointed={len(list(checkpoint_dir.glob('day_*.csv')))}; path={output}; missing_manifest={missing_output}",
-        flush=True,
-    )
+    print(f"GDELT chunk saved: {args.start} -> {args.end}; rows={len(frame)}; missing_days={len(missing)}; restored/checkpointed={len(list(checkpoint_dir.glob('day_*.csv')))}; path={output}; missing_manifest={missing_output}", flush=True)
     return 0
 
 
