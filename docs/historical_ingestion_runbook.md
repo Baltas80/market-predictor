@@ -30,9 +30,11 @@ Daily market bars are represented at the modeled cash-session close. The session
 
 FRED `observation_date` and vintage dates are distinct. The repository does not invent an intraday release timestamp. The current aligner uses a conservative date-level session lag; this policy must be recorded in the dataset manifest.
 
-## Event timing
+## GDELT 1.0 timing
 
-`event_time`, `published_at` and `available_at` are separate fields. GDELT `DATEADDED` is retained as an availability proxy; it is not rewritten as publication time. An unknown publication timestamp is valid when availability is known.
+Production historical event ingestion uses the GDELT 1.0 daily stream under `https://data.gdeltproject.org/events/{date}.export.CSV.zip`. The archive's `DATEADDED` field may be an 8-digit archive date and is **not** treated as an availability timestamp. `SQLDATE` is the event date and is never used as availability.
+
+For PIT gating, when the exact publication instant cannot be demonstrated, the pipeline uses the conservative next-day 06:00 US Eastern publication boundary for the archive day. This is converted to UTC with the `America/New_York` timezone so DST is handled explicitly. `published_at` remains unknown unless independently supplied. The normalized source identifier is `GDELT_1_Event_Database` and must not be conflated with the separate GDELT 2.0 stream.
 
 ## Lockbox rule
 
