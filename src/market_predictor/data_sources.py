@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from decimal import Decimal, InvalidOperation
 from io import BytesIO, StringIO
 from pathlib import Path
 import hashlib
@@ -149,16 +148,7 @@ def load_fred_observations(
     realtime_start: str | None = None,
     realtime_end: str | None = None,
 ) -> pd.DataFrame:
-    """Load FRED observations in tall real-time-period format.
-
-    FRED ``output_type=2`` is a wide vintage matrix with dynamically named
-    columns (for example ``CPIAUCSL_20200101``), so it cannot be represented
-    by the point-in-time audit schema. Output type 1 preserves the per-row
-    ``realtime_start``/``realtime_end`` fields needed by the PIT pipeline.
-    Empty observations are represented by FRED as non-numeric values such as
-    ``.`` and are removed before the PIT audit because they are not actual
-    observations.
-    """
+    """Load FRED observations in tall real-time-period format."""
     params = {
         "series_id": series_id,
         "api_key": api_key,
@@ -232,52 +222,18 @@ def _gdelt_category(event_root_code: str, event_code: str, actor_text: str) -> s
     return "political_crisis"
 
 
-def _canonical_gdelt_date_added(value: object) -> str | None:
-    """Canonicalize exact integer-like GDELT DATEADDED encodings without rounding."""
-    if value is None or pd.isna(value):
-        return None
-    text = str(value).strip()
-    if text.isdigit() and len(text) == 14:
-        return text
-    try:
-        number = Decimal(text)
-    except (InvalidOperation, ValueError):
-        return None
-    if not number.is_finite() or number != number.to_integral_value():
-        return None
-    canonical = format(number.to_integral_value(), "f")
-    return canonical if canonical.isdigit() and len(canonical) == 14 else None
-
-
-def _parse_gdelt_date_added(series: pd.Series) -> pd.Series:
-    """Parse GDELT DATEADDED as strict UTC YYYYMMDDHHMMSS."""
-    canonical = series.map(_canonical_gdelt_date_added).astype("string")
-    return pd.to_datetime(canonical, format="%Y%m%d%H%M%S", utc=True, errors="coerce")
-
-
 def load_gdelt_day(day: str | pd.Timestamp) -> pd.DataFrame:
-    date = pd.Timestamp(day).strftime("%Y%m%d")
-    response = _get(GDELT_DAILY_URL.format(date=date), timeout=120)
-    with zipfile.ZipFile(BytesIO(response.content)) as archive:
-        members = archive.namelist()
-        if not members:
-            raise ValueError(f"Empty GDELT archive for {date}")
-        with archive.open(members[0]) as handle:
-            frame = pd.read_csv(handle, sep="\t", header=None, names=GDELT_COLUMNS, dtype=str, low_memory=False)
-    frame["date_added"] = _parse_gdelt_date_added(frame["date_added"])
-    frame["sql_date"] = pd.to_datetime(frame["sql_date"], format="%Y%m%d", errors="coerce", utc=True)
-    for column in ["goldstein_scale", "num_mentions", "num_sources", "num_articles", "avg_tone"]:
-        frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    actor_text = frame[["actor1_name", "actor2_name", "action_geo_fullname"]].fillna("").agg(" ".join, axis=1)
-    frame["category"] = [_gdelt_category(root, code, text) for root, code, text in zip(frame["event_root_code"], frame["event_code"], actor_text)]
-    scale = frame["goldstein_scale"].abs().clip(0, 10) / 10
-    media = frame["num_sources"].fillna(0).clip(lower=0)
-    frame["severity"] = (0.7 * scale + 0.3 * (media / (media + 5)).clip(0, 1)).clip(0, 1)
-    frame["surprise"] = 0.0
-    return frame
+    """Compatibility wrapper for the canonical GDELT 1.0 loader.
+
+    The legacy implementation is intentionally removed: DATEADDED is never
+    interpreted as an information-availability timestamp here.
+    """
+    from .gdelt1 import load_gdelt_day as canonical_load_gdelt_day
+    return canonical_load_gdelt_day(day)
 
 
 def load_gdelt_range(start: str | pd.Timestamp, end: str | pd.Timestamp) -> pd.DataFrame:
+    """Load a range through the canonical GDELT 1.0 loader."""
     start_date, end_date = pd.Timestamp(start).date(), pd.Timestamp(end).date()
     if end_date < start_date:
         raise ValueError("end must be on or after start")
@@ -286,7 +242,7 @@ def load_gdelt_range(start: str | pd.Timestamp, end: str | pd.Timestamp) -> pd.D
     while current <= end_date:
         frames.append(load_gdelt_day(current))
         current += timedelta(days=1)
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=GDELT_COLUMNS + ["category", "severity", "surprise"])
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=GDELT_COLUMNS + ["category", "severity", "surprise", "available_at", "source_id"])
 
 
 def _sec_category(title: str, description: str) -> str:
@@ -316,16 +272,20 @@ def load_sec_litigation_releases_rss() -> pd.DataFrame:
 
 
 def gdelt_events_to_market_events(frame: pd.DataFrame) -> pd.DataFrame:
-    """Map GDELT without conflating occurrence, publication and availability."""
+    """Map GDELT using explicit PIT availability supplied by the canonical loader."""
+    required = {"global_event_id", "sql_date", "available_at", "category", "severity", "action_geo_country", "actor2_name", "num_sources", "surprise", "source_url"}
+    missing = required - set(frame.columns)
+    if missing:
+        raise ValueError(f"GDELT frame missing explicit PIT fields: {sorted(missing)}")
     event_time = pd.to_datetime(frame["sql_date"], utc=True, errors="coerce")
-    available_at = pd.to_datetime(frame["date_added"], utc=True, errors="coerce")
+    available_at = pd.to_datetime(frame["available_at"], utc=True, errors="coerce")
     return pd.DataFrame({
         "event_id": frame["global_event_id"].astype(str), "event_time": event_time,
         "published_at": pd.NaT, "available_at": available_at, "category": frame["category"],
         "severity": frame["severity"].round(6), "country": frame["action_geo_country"].replace("", pd.NA),
         "entity": frame["actor2_name"].replace("", pd.NA), "sector": pd.NA, "duration_days": 0.0,
         "media_intensity": frame["num_sources"].fillna(0), "surprise": frame["surprise"],
-        "source": "GDELT_2_Event_Database", "availability_proxy": "DATEADDED", "source_url": frame["source_url"],
+        "source": "GDELT_1_Event_Database", "availability_proxy": "daily_archive_publication_boundary", "source_url": frame["source_url"],
     }).drop_duplicates("event_id").sort_values("available_at")
 
 
