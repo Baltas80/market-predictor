@@ -47,6 +47,20 @@ def _macro(api_key: str, start: str, end: str) -> pd.DataFrame:
     return frame
 
 
+def _gdelt(source_id: str) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "event_id": ["g1"],
+            "event_time": pd.to_datetime(["2024-01-02"], utc=True),
+            "published_at": [pd.NaT],
+            "available_at": pd.to_datetime(["2024-01-03T11:00:00Z"], utc=True),
+            "source_id": [source_id],
+            "category": ["political_crisis"],
+            "severity": [0.5],
+        }
+    )
+
+
 def test_staging_runs_all_phases_and_writes_manifest(tmp_path: Path):
     result = stage_historical(
         tmp_path,
@@ -86,6 +100,32 @@ def test_staging_records_yahoo_fallback_provenance(tmp_path: Path):
     assert any("Yahoo Finance" in item for item in result["limitations"])
     manifest_text = (tmp_path / "source_manifest.json").read_text(encoding="utf-8")
     assert "YahooFinance_GSPC" in manifest_text
+
+
+def test_staging_rejects_noncanonical_gdelt_source_id(tmp_path: Path):
+    with pytest.raises(RuntimeError, match="non-canonical GDELT source identifiers"):
+        stage_historical(
+            tmp_path,
+            fred_api_key="test-key",
+            include_gdelt=True,
+            include_sec=False,
+            market_fetcher=_market,
+            fred_fetcher=_macro,
+            gdelt_fetcher=lambda start, end: _gdelt("GDELT_2_Event_Database"),
+        )
+
+
+def test_staging_accepts_canonical_gdelt_source_id(tmp_path: Path):
+    result = stage_historical(
+        tmp_path,
+        fred_api_key="test-key",
+        include_gdelt=True,
+        include_sec=False,
+        market_fetcher=_market,
+        fred_fetcher=_macro,
+        gdelt_fetcher=lambda start, end: _gdelt("GDELT_1_Event_Database"),
+    )
+    assert result["historical_gate"] is not None
 
 
 def test_fred_vintage_windows_bound_long_requests():
