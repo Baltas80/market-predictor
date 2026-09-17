@@ -1,20 +1,20 @@
-"""Download one bounded GDELT historical chunk with resumable daily checkpoints.
+"""Download one bounded GDELT 1.0 historical chunk with resumable daily checkpoints.
 
-A source-day that is genuinely unavailable is recorded in a deterministic
-manifest and the chunk continues. Every successfully normalized day is also
-checkpointed immediately, so a later workflow run can restore completed days
-from the previous run's artifact and skip their downloads. Missing days are
-never imputed here; a later recovery pass may retry them.
+GDELT 1.0 ``events/`` is a daily stream. Its archive date is the event day,
+while publication is a later batch boundary. The pipeline therefore uses a
+conservative next-day 06:00 America/New_York availability timestamp instead
+of interpreting the 8-digit DATEADDED field as a 14-digit availability time.
 """
 from __future__ import annotations
 
 import argparse
-from datetime import timedelta
+from datetime import timedelta, time as dt_time
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from pathlib import Path
 import time
 import zipfile
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -24,7 +24,10 @@ from market_predictor.research_schema import deduplicate_events, normalize_event
 
 GDELT_DAY_RETRIES = 4
 GDELT_RETRY_BASE_SECONDS = 2
-GDELT_CHECKPOINT_VERSION = "gdelt-pit-v2"
+GDELT_CHECKPOINT_VERSION = "gdelt1-pit-v3"
+GDELT_SOURCE_ID = "GDELT_1_Event_Database"
+GDELT_PUBLICATION_HOUR_EST = 6
+GDELT_NEW_YORK = ZoneInfo("America/New_York")
 
 GDELT_EXPORT_COLUMNS_61 = [
     "global_event_id", "sql_date", "month_year", "year", "fraction_date",
@@ -69,18 +72,28 @@ def _canonical_gdelt_date_added(value: object) -> str | None:
 
 
 def _parse_gdelt_date_added(series: pd.Series) -> pd.Series:
-    """Parse GDELT DATEADDED as strict UTC YYYYMMDDHHMMSS."""
+    """Parse legacy 14-digit DATEADDED values when present; 8-digit GDELT 1.0 values are not availability timestamps."""
     canonical = series.map(_canonical_gdelt_date_added).astype("string")
-    return pd.to_datetime(
-        canonical,
-        format="%Y%m%d%H%M%S",
-        utc=True,
-        errors="coerce",
-    )
+    return pd.to_datetime(canonical, format="%Y%m%d%H%M%S", utc=True, errors="coerce")
+
+
+def gdelt1_daily_availability(day: str | pd.Timestamp) -> pd.Timestamp:
+    """Return the conservative PIT availability boundary for a GDELT 1.0 day.
+
+    GDELT 1.0 daily archives are published by 06:00 US Eastern on the day
+    following the archive/event date. Using that boundary avoids treating the
+    event date or SQLDATE as information availability.
+    """
+    archive_date = pd.Timestamp(day).date()
+    local = pd.Timestamp.combine(
+        archive_date + timedelta(days=1),
+        dt_time(hour=GDELT_PUBLICATION_HOUR_EST),
+    ).tz_localize(GDELT_NEW_YORK)
+    return local.tz_convert("UTC")
 
 
 def load_gdelt_day(day: str | pd.Timestamp) -> pd.DataFrame:
-    """Load and normalize one GDELT 2.0 daily event export."""
+    """Load and normalize one GDELT 1.0 daily event export."""
     date = pd.Timestamp(day).strftime("%Y%m%d")
     url = f"https://data.gdeltproject.org/events/{date}.export.CSV.zip"
     response = requests.get(
@@ -120,7 +133,7 @@ def load_gdelt_day(day: str | pd.Timestamp) -> pd.DataFrame:
         if column not in frame:
             frame[column] = pd.NA
     frame = frame[GDELT_EXPORT_COLUMNS_61]
-    frame["date_added"] = _parse_gdelt_date_added(frame["date_added"])
+    frame["date_added"] = frame["date_added"].astype("string").str.strip()
     frame["sql_date"] = pd.to_datetime(
         frame["sql_date"].astype("string").str.strip(),
         format="%Y%m%d",
@@ -212,8 +225,8 @@ def fetch_gdelt_chunk(start: str, end: str, checkpoint_dir: Path | None = None) 
                     raw_day = raw_day.rename(columns={"global_event_id": "event_id"})
                 raw_day["event_time"] = raw_day["sql_date"]
                 raw_day["published_at"] = pd.NaT
-                raw_day["available_at"] = raw_day["date_added"]
-                normalized = normalize_event_sources(raw_day, source_id="GDELT_2_Event_Database")
+                raw_day["available_at"] = gdelt1_daily_availability(current)
+                normalized = normalize_event_sources(raw_day, source_id=GDELT_SOURCE_ID)
                 before = len(normalized)
                 invalid_counts = {
                     column: int(normalized[column].isna().sum())
@@ -237,7 +250,8 @@ def fetch_gdelt_chunk(start: str, end: str, checkpoint_dir: Path | None = None) 
                 frames.append(normalized)
                 last_error = None
                 print(
-                    f"GDELT day checkpoint saved: {current.isoformat()} rows={len(normalized)}",
+                    f"GDELT day checkpoint saved: {current.isoformat()} rows={len(normalized)} "
+                    f"available_at={gdelt1_daily_availability(current).isoformat()}",
                     flush=True,
                 )
                 break
@@ -256,7 +270,7 @@ def fetch_gdelt_chunk(start: str, end: str, checkpoint_dir: Path | None = None) 
         if last_error is not None:
             missing.append({
                 "date": current.isoformat(),
-                "source_id": "GDELT_2_Event_Database",
+                "source_id": GDELT_SOURCE_ID,
                 "status": "missing",
                 "error_type": type(last_error).__name__,
                 "error": str(last_error),
