@@ -23,6 +23,7 @@ FRED_VINTAGE_DATES_PAGE_SIZE = 10000
 FRED_VINTAGE_CHUNK_DAYS = 365
 GDELT_DAY_RETRIES = 4
 GDELT_RETRY_BASE_SECONDS = 2
+FRED_REQUEST_MIN_INTERVAL_SECONDS = 0.55
 
 
 def fetch_market(start: str, end: str) -> pd.DataFrame:
@@ -47,6 +48,7 @@ def _fred_vintage_dates(api_key: str, series_id: str) -> pd.DatetimeIndex:
     offset = 0
     dates: list[str] = []
     while True:
+        time.sleep(FRED_REQUEST_MIN_INTERVAL_SECONDS)
         params = {"series_id": series_id, "api_key": api_key, "file_type": "json", "limit": FRED_VINTAGE_DATES_PAGE_SIZE, "offset": offset, "sort_order": "asc"}
         response = _get(FRED_VINTAGE_DATES_URL, timeout=60, params=params)
         payload = response.json()
@@ -107,6 +109,7 @@ def fetch_fred(api_key: str, start: str, end: str) -> pd.DataFrame:
         coverage[series_id] = {"requested_start": requested_start.date().isoformat(), "pit_start": effective_start.date().isoformat(), "first_vintage": vintage_dates.min().date().isoformat(), "last_vintage_in_history": vintage_dates.max().date().isoformat()}
         for realtime_start, realtime_end in _fred_vintage_windows(effective_start.date().isoformat(), requested_end.date().isoformat()):
             try:
+                time.sleep(FRED_REQUEST_MIN_INTERVAL_SECONDS)
                 frame = load_fred_observations(series_id, api_key, realtime_start=realtime_start, realtime_end=realtime_end).copy()
             except requests.HTTPError as exc:
                 _raise_fred_error(exc, series_id=series_id, realtime_start=realtime_start, realtime_end=realtime_end)
