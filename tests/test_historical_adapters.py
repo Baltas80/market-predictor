@@ -13,6 +13,7 @@ def _event_frame(event_id: str = "1") -> pd.DataFrame:
             "event_time": pd.to_datetime(["2020-01-01"], utc=True),
             "published_at": pd.NaT,
             "available_at": pd.to_datetime(["2020-01-01T12:00:00Z"], utc=True),
+            "source_id": ["GDELT_1_Event_Database"],
             "category": ["war_conflict"],
             "severity": [0.5],
             "country": ["US"],
@@ -21,8 +22,8 @@ def _event_frame(event_id: str = "1") -> pd.DataFrame:
             "duration_days": [0.0],
             "media_intensity": [1.0],
             "surprise": [0.0],
-            "source": ["GDELT_2_Event_Database"],
-            "availability_proxy": ["DATEADDED"],
+            "source": ["GDELT_1_Event_Database"],
+            "availability_proxy": ["conservative_next_day_boundary"],
             "source_url": ["https://example.test/1"],
         }
     )
