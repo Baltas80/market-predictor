@@ -65,7 +65,7 @@ jobs:
           retention-days: 7
 
   prepare-gdelt-matrix:
-    name: PREPARE 28-DAY GDELT MATRIX
+    name: PREPARE 28-DAY GDELT 1.0 MATRIX
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
@@ -76,8 +76,9 @@ jobs:
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import datetime, json
-          # GDELT 2.0 starts on 2015-02-19. Do not create impossible
-          # source-day gaps for dates before the dataset existed.
+          # Production historical ingestion uses the GDELT 1.0 daily events/
+          # archive. The first supported source-day in this research dataset
+          # is 2015-02-19; GDELT 2.0 is a separate research track.
           start = datetime.date(2015, 2, 19)
           end = datetime.date(2025, 12, 31)
           rows = []
@@ -93,7 +94,7 @@ jobs:
           PY
 
   gdelt-chunks:
-    name: GDELT ${{ matrix.start }} → ${{ matrix.end }}
+    name: GDELT 1.0 ${{ matrix.start }} → ${{ matrix.end }}
     needs: prepare-gdelt-matrix
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -131,7 +132,7 @@ jobs:
           else
             echo "No previous checkpoint artifact found; starting this chunk from scratch"
           fi
-      - name: Download and persist 28-day GDELT chunk
+      - name: Download and persist 28-day GDELT 1.0 chunk
         run: |
           python scripts/ingest_gdelt_chunk.py \
             --start "${{ matrix.start }}" \
@@ -139,7 +140,7 @@ jobs:
             --output "data/gdelt_chunks/gdelt_${{ matrix.chunk }}_${{ matrix.start }}_${{ matrix.end }}.csv" \
             --missing-output "data/gdelt_chunks/gdelt_${{ matrix.chunk }}_missing.csv" \
             --checkpoint-dir "data/gdelt_chunks/gdelt_${{ matrix.chunk }}_${{ matrix.start }}_${{ matrix.end }}_days"
-      - name: Upload completed GDELT chunk and daily checkpoints
+      - name: Upload completed GDELT 1.0 chunk and daily checkpoints
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -149,7 +150,7 @@ jobs:
           retention-days: 7
 
   recover-gdelt-gaps:
-    name: RECOVER GDELT GAPS ONLY
+    name: RECOVER GDELT 1.0 GAPS ONLY
     needs: gdelt-chunks
     runs-on: ubuntu-24.04
     timeout-minutes: 90
