@@ -1,13 +1,14 @@
 """Canonical GDELT 1.0 daily-event loader with conservative PIT timing.
 
 The ``events/`` archive is a daily batch. Its archive/event day is distinct
-from information availability. The loader therefore retains DATEADDED only as
-an original source field and supplies a conservative next-day 06:00
-America/New_York availability boundary.
+from information availability. DATEADDED is retained as original source data
+only; PIT availability uses a conservative next-day 06:00 America/New_York
+publication boundary.
 """
 from __future__ import annotations
 
 from datetime import timedelta, time as dt_time
+from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from zoneinfo import ZoneInfo
 import zipfile
@@ -47,6 +48,29 @@ GDELT_EXPORT_COLUMNS_58 = [
 ]
 
 
+def _canonical_gdelt_date_added(value: object) -> str | None:
+    """Canonicalize original DATEADDED encodings without using them for PIT."""
+    if value is None or pd.isna(value):
+        return None
+    text = str(value).strip()
+    if text.isdigit() and len(text) == 14:
+        return text
+    try:
+        number = Decimal(text)
+    except (InvalidOperation, ValueError):
+        return None
+    if not number.is_finite() or number != number.to_integral_value():
+        return None
+    canonical = format(number.to_integral_value(), "f")
+    return canonical if canonical.isdigit() and len(canonical) == 14 else None
+
+
+def _parse_gdelt_date_added(series: pd.Series) -> pd.Series:
+    """Parse legacy 14-digit DATEADDED values as original source data only."""
+    canonical = series.map(_canonical_gdelt_date_added).astype("string")
+    return pd.to_datetime(canonical, format="%Y%m%d%H%M%S", utc=True, errors="coerce")
+
+
 def gdelt1_daily_availability(day: str | pd.Timestamp) -> pd.Timestamp:
     """Return the conservative next-day 06:00 US Eastern PIT boundary."""
     archive_date = pd.Timestamp(day).date()
@@ -78,38 +102,20 @@ def load_gdelt_day(day: str | pd.Timestamp) -> pd.DataFrame:
         elif field_count == len(GDELT_EXPORT_COLUMNS_58):
             columns = GDELT_EXPORT_COLUMNS_58
         else:
-            raise ValueError(
-                f"Unsupported GDELT field count for {date}: {field_count} "
-                f"(expected 58 or 61)"
-            )
+            raise ValueError(f"Unsupported GDELT field count for {date}: {field_count} (expected 58 or 61)")
         with archive.open(member) as handle:
-            frame = pd.read_csv(
-                handle,
-                sep="\t",
-                header=None,
-                names=columns,
-                dtype=str,
-                low_memory=False,
-            )
+            frame = pd.read_csv(handle, sep="\t", header=None, names=columns, dtype=str, low_memory=False)
 
     for column in ("actor1_geo_adm2", "actor2_geo_adm2", "action_geo_adm2"):
         if column not in frame:
             frame[column] = pd.NA
     frame = frame[GDELT_EXPORT_COLUMNS_61]
     frame["date_added"] = frame["date_added"].astype("string").str.strip()
-    frame["sql_date"] = pd.to_datetime(
-        frame["sql_date"].astype("string").str.strip(),
-        format="%Y%m%d",
-        utc=True,
-        errors="coerce",
-    )
+    frame["sql_date"] = pd.to_datetime(frame["sql_date"].astype("string").str.strip(), format="%Y%m%d", utc=True, errors="coerce")
     for column in ["goldstein_scale", "num_mentions", "num_sources", "num_articles", "avg_tone"]:
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
     actor_text = frame[["actor1_name", "actor2_name", "action_geo_fullname"]].fillna("").agg(" ".join, axis=1)
-    frame["category"] = [
-        _gdelt_category(root, code, text)
-        for root, code, text in zip(frame["event_root_code"], frame["event_code"], actor_text)
-    ]
+    frame["category"] = [_gdelt_category(root, code, text) for root, code, text in zip(frame["event_root_code"], frame["event_code"], actor_text)]
     scale = frame["goldstein_scale"].abs().clip(0, 10) / 10
     media = frame["num_sources"].fillna(0).clip(lower=0)
     frame["severity"] = (0.7 * scale + 0.3 * (media / (media + 5)).clip(0, 1)).clip(0, 1)
