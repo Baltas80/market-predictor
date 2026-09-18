@@ -18,7 +18,7 @@ from market_predictor.event_io import load_events_csv
 from market_predictor.final_financial_report import build_final_financial_report, write_financial_report
 from market_predictor.gdelt1 import GDELT_SOURCE_ID
 from market_predictor.abc_protocol import folds_identity_hash
-from market_predictor.experiments import TECHNICAL
+from market_predictor.event_features import events_to_features
 from market_predictor.lockbox_manifest import LockboxManifest
 from market_predictor.pipeline import (
     PROTOCOL_VERSION,
@@ -242,11 +242,7 @@ def main() -> None:
     )
 
     prepared_event_data = panel.join(
-        __import__("market_predictor.event_features", fromlist=["events_to_features"]).events_to_features(
-            panel.index,
-            events,
-            half_life_days=7.0,
-        ),
+        events_to_features(panel.index, events, half_life_days=7.0),
         how="left",
     )
     prepared = prepare_baseline_data(prepared_event_data, horizon=horizon)
