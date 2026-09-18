@@ -33,7 +33,12 @@ def check_order(
     daily_loss: float = 0.0,
     kill_switch: bool = False,
 ) -> RiskDecision:
-    """Validate an order without allowing the predictive model to bypass limits."""
+    """Validate an order without allowing the predictive model to bypass limits.
+
+    Position exposure is checked using the signed quantity after the proposed
+    order. This protects both long and short exposure while allowing a sell to
+    reduce an existing long position.
+    """
     if kill_switch:
         return RiskDecision(False, "kill switch is active")
     if reference_price <= 0:
@@ -46,5 +51,14 @@ def check_order(
         return RiskDecision(False, "order notional exceeds limit")
     if notional > account.buying_power:
         return RiskDecision(False, "insufficient buying power")
+
+    current_quantity = next(
+        (position.quantity for position in account.positions if position.symbol == order.symbol),
+        0.0,
+    )
+    signed_quantity = order.quantity if order.side == "buy" else -order.quantity
+    resulting_notional = abs(current_quantity + signed_quantity) * reference_price
+    if resulting_notional > limits.max_position_notional:
+        return RiskDecision(False, "resulting position notional exceeds limit")
 
     return RiskDecision(True, "order passed risk checks")

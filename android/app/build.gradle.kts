@@ -1,0 +1,20 @@
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+}
+
+android {
+    namespace = "com.baltas80.marketpredictor"
+    compileSdk = 35
+
+    defaultConfig {
+        applicationId = "com.baltas80.marketpredictor.preview"
+        minSdk = 26
+        targetSdk = 35
+        versionCode = 1
+        versionName = "0.1.0-preview"
+    }
+}
+
+kotlin { jvmToolchain(17) }
+
