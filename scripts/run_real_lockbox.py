@@ -151,6 +151,12 @@ def _assert_required_gdelt_provenance(staging: Path) -> None:
         )
 
 
+def _load_production_c_events(staging: Path):
+    """Load only the canonical GDELT 1.0 event source for production C."""
+    events = _load_production_c_events(staging)
+    return events
+
+
 def _prediction_hash(frame: pd.DataFrame) -> str:
     """Hash the complete OOS prediction frame deterministically."""
     records = frame.reset_index().astype(object).where(pd.notna(frame), None).to_dict(orient="records")
