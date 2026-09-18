@@ -20,7 +20,7 @@ from .time_contract import assert_market_target_contract
 FEATURE_COLUMNS = [
     "return_1d", "return_5d", "volatility_20d", "price_to_sma20", "volume_change", "range_pct",
 ]
-PROTOCOL_VERSION = "2026-09-05"
+PROTOCOL_VERSION = "2026-09-18-c-gdelt1-only-v1"
 
 
 def prepare_baseline_data(df: pd.DataFrame, horizon: int = 5) -> pd.DataFrame:
