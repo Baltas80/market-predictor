@@ -316,6 +316,18 @@ def main() -> None:
             "protocol_version": PROTOCOL_VERSION,
             "folds_hash": folds_identity_hash(folds),
             "features": {result.name: list(result.features) for result in results},
+            "model": "StandardScaler + LogisticRegression",
+            "hyperparameters": {
+                "max_iter": 2000,
+                "random_state": 42,
+                "horizon": horizon,
+                "test_fraction": test_fraction,
+                "financial_threshold": 0.5,
+                "event_half_life_days": 7.0,
+            },
+            "transaction_cost_bps": 5.0,
+            "slippage_bps": 0.0,
+            "benchmark": "buy_and_hold_close",
         }
     )
     experiment_id = f"exp-{protocol_identity[:16]}"
