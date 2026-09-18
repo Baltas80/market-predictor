@@ -14,7 +14,7 @@ permissions:
 jobs:
   compare:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -25,13 +25,17 @@ jobs:
           cache: pip
       - name: Install package
         run: python -m pip install --upgrade pip && python -m pip install -e .
-      - name: Run identical 3-day slow/fast canary
+      - name: Run identical 9-day slow/fast canary
         run: |
-          python scripts/benchmark_gdelt_parallel.py             --start 2025-01-02             --end 2025-01-04             --workers 4             --output data/experimental/gdelt1_fast_compare
+          python scripts/benchmark_gdelt_parallel.py \
+            --start 2025-01-02 \
+            --end 2025-01-10 \
+            --workers 4 \
+            --output data/experimental/gdelt1_fast_compare
       - name: Upload comparison
         uses: actions/upload-artifact@v7
         with:
-          name: gdelt1-fast-vs-slow-canary
+          name: gdelt1-fast-vs-slow-canary-9d
           path: data/experimental/gdelt1_fast_compare/
           if-no-files-found: error
           retention-days: 14
