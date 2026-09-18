@@ -55,7 +55,6 @@ def _staging_fingerprint(staging: Path) -> str:
         staging / "normalized" / "market.csv",
         staging / "raw" / "macro_fred.csv",
         staging / "normalized" / "events_gdelt.csv",
-        staging / "normalized" / "events_sec_litigation.csv",
     ]
     digest = hashlib.sha256()
     found = False
