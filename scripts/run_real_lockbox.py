@@ -192,14 +192,13 @@ def main() -> None:
         how="left",
     )
 
-    events = []
-    for name in ("events_gdelt.csv", "events_sec_litigation.csv"):
-        path = staging / "normalized" / name
-        if path.exists() and path.stat().st_size > 0:
-            events.extend(load_events_csv(path))
+    gdelt_path = staging / "normalized" / "events_gdelt.csv"
+    if not gdelt_path.exists() or gdelt_path.stat().st_size == 0:
+        raise RuntimeError("No staged GDELT 1.0 events available for experiment C")
+    events = load_events_csv(gdelt_path)
     events.sort(key=_event_sort_key)
     if not events:
-        raise RuntimeError("No staged historical events available for experiment C")
+        raise RuntimeError("No staged GDELT 1.0 events available for experiment C")
 
     results = run_final_lockbox_event_experiments(
         panel,
