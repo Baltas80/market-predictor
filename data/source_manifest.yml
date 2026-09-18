@@ -1,5 +1,5 @@
 version: 3
-updated_at: 2026-09-17
+updated_at: 2026-09-18
 purpose: point_in_time_market_prediction
 sources:
   market:
@@ -26,11 +26,11 @@ sources:
     primary_use: macro_features
   events:
     provider: GDELT_Project
-    production_dataset: GDELT_1_Daily_Event_Database
+    production_dataset: GDELT_1_Event_Database
     production_archive: https://data.gdeltproject.org/events/
     coverage_start: 2015-02-19
     coverage_end: 2025-12-31
-    availability_field: conservative_next_day_boundary
+    availability_field: conservative_next_day_06:00_America/New_York
     availability_timezone: America/New_York
     production_availability_policy: 06:00 America/New_York on day after file date
     publication_time: unknown
@@ -55,4 +55,4 @@ rules:
   - keep_raw_and_normalized_event_ids
   - do_not_use_current_fred_revisions_as_historical_features
   - do_not_commit_large_raw_archives_to_git
-  - final_lockbox_fails_closed_on_unresolved_required_gdelt_source_days
+  - final_lockbox_fails_closed_on_missing_or_noncanonical_required_gdelt_source_days
