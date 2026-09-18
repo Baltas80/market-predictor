@@ -78,7 +78,7 @@ class LockboxManifest:
             "result_hashes", "source_hashes", "coverage", "hyperparameters",
             "train_ranges", "validation_ranges", "oos_ranges", "dependencies",
         ):
-            payload[field] = list(getattr(self, field))
+            payload[field] = [list(item) for item in getattr(self, field)]
         payload["seeds"] = list(self.seeds)
         payload["artifact_paths"] = list(self.artifact_paths)
         return payload
