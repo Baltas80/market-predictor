@@ -1,0 +1,37 @@
+name: GDELT 1.0 Fast vs Slow Canary
+
+on:
+  push:
+    paths:
+      - "scripts/benchmark_gdelt_parallel.py"
+      - "tests/test_gdelt_parallel_benchmark.py"
+      - ".github/workflows/gdelt1-fast-compare.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install package
+        run: python -m pip install --upgrade pip && python -m pip install -e .
+      - name: Run identical 3-day slow/fast canary
+        run: |
+          python scripts/benchmark_gdelt_parallel.py             --start 2025-01-02             --end 2025-01-04             --workers 4             --output data/experimental/gdelt1_fast_compare
+      - name: Upload comparison
+        uses: actions/upload-artifact@v7
+        with:
+          name: gdelt1-fast-vs-slow-canary
+          path: data/experimental/gdelt1_fast_compare/
+          if-no-files-found: error
+          retention-days: 14
