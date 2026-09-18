@@ -13,13 +13,13 @@ from market_predictor.data_sources import align_fred_point_in_time
 from market_predictor.dataset import load_market, materialize_macro
 from market_predictor.event_io import load_events_csv
 from market_predictor.final_financial_report import build_final_financial_report, write_financial_report
+from market_predictor.gdelt1 import GDELT_SOURCE_ID
 from market_predictor.lockbox_manifest import LockboxManifest
 from market_predictor.pipeline import PROTOCOL_VERSION, run_final_lockbox_event_experiments
 from market_predictor.reproducibility import canonical_json_hash
 
 
 FRED_SERIES = ("FEDFUNDS", "DGS10", "CPIAUCSL", "UNRATE", "VIXCLS")
-GDELT_SOURCE_ID = "GDELT_1_Event_Database"
 
 
 def _event_sort_key(event) -> pd.Timestamp:
@@ -31,6 +31,12 @@ def _event_sort_key(event) -> pd.Timestamp:
     if pd.notna(published):
         return published
     return pd.Timestamp(event.event_time)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
 def _staging_fingerprint(staging: Path) -> str:
@@ -56,22 +62,92 @@ def _staging_fingerprint(staging: Path) -> str:
     return digest.hexdigest()
 
 
-def _assert_required_gdelt_coverage(staging: Path) -> None:
-    """Refuse final evaluation if the required GDELT 1.0 recovery manifest is non-empty."""
-    path = staging / "raw" / "events_gdelt_missing.csv"
-    if not path.exists() or path.stat().st_size == 0:
-        return
-    missing = pd.read_csv(path)
-    if missing.empty:
-        return
-    if "source_id" in missing.columns:
-        required = missing.loc[missing["source_id"] == GDELT_SOURCE_ID]
-    else:
-        required = missing
-    if not required.empty:
+def _assert_required_gdelt_provenance(staging: Path) -> None:
+    """Fail closed unless final staging proves canonical GDELT 1.0 provenance."""
+    missing_path = staging / "raw" / "events_gdelt_missing.csv"
+    if not missing_path.exists():
         raise RuntimeError(
-            f"Final lockbox refused: {len(required)} required GDELT source-days remain missing. "
-            "Resolve the historical ingestion gaps before generating A/B/C or the financial report."
+            "Final lockbox refused: required GDELT gap manifest is missing; "
+            "completeness cannot be demonstrated."
+        )
+    missing = pd.read_csv(missing_path)
+    if not missing.empty:
+        if "source_id" not in missing.columns:
+            raise RuntimeError(
+                "Final lockbox refused: GDELT gap manifest has no source_id; "
+                "completeness cannot be attributed to the canonical source."
+            )
+        required = missing.loc[missing["source_id"] == GDELT_SOURCE_ID]
+        noncanonical = missing.loc[missing["source_id"] != GDELT_SOURCE_ID]
+        if not noncanonical.empty:
+            raise RuntimeError(
+                "Final lockbox refused: GDELT gap manifest contains non-canonical "
+                f"source identifiers: {sorted(set(noncanonical['source_id'].astype(str)))}"
+            )
+        if not required.empty:
+            raise RuntimeError(
+                f"Final lockbox refused: {len(required)} required GDELT source-days remain missing. "
+                "Resolve the historical ingestion gaps before generating A/B/C or the financial report."
+            )
+
+    manifest_path = staging / "source_manifest.json"
+    result_path = staging / "staging_result.json"
+    if not manifest_path.exists() or not result_path.exists():
+        raise RuntimeError(
+            "Final lockbox refused: source_manifest.json and staging_result.json "
+            "are required provenance artifacts."
+        )
+
+    try:
+        source_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        staging_result = json.loads(result_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"Final lockbox refused: provenance artifacts are unreadable: {type(exc).__name__}"
+        ) from exc
+
+    gdelt_manifests = [
+        item for item in source_manifest
+        if item.get("source_id") == GDELT_SOURCE_ID
+    ]
+    noncanonical_manifest_ids = sorted(
+        {
+            str(item.get("source_id"))
+            for item in source_manifest
+            if str(item.get("source_id", "")).startswith("GDELT_")
+            and item.get("source_id") != GDELT_SOURCE_ID
+        }
+    )
+    if noncanonical_manifest_ids:
+        raise RuntimeError(
+            "Final lockbox refused: source manifest contains non-canonical GDELT "
+            f"identifiers: {noncanonical_manifest_ids}"
+        )
+    if len(gdelt_manifests) != 1:
+        raise RuntimeError(
+            "Final lockbox refused: expected exactly one canonical GDELT 1.0 "
+            f"source manifest, found {len(gdelt_manifests)}."
+        )
+
+    policy = str(gdelt_manifests[0].get("availability_policy", ""))
+    if "next-day 06:00 America/New_York" not in policy:
+        raise RuntimeError(
+            "Final lockbox refused: canonical GDELT 1.0 PIT availability policy "
+            "is not declared as the approved next-day 06:00 America/New_York boundary."
+        )
+
+    if staging_result.get("status") not in {"admissible", "admissible_with_source_limits"}:
+        raise RuntimeError(
+            "Final lockbox refused: staging result is not admissible: "
+            f"{staging_result.get('status')!r}"
+        )
+    if staging_result.get("gdelt_missing_day_count") != 0:
+        raise RuntimeError(
+            "Final lockbox refused: staging result reports non-zero GDELT missing-day count."
+        )
+    if staging_result.get("gdelt_chunk_count") != staging_result.get("gdelt_expected_chunk_count"):
+        raise RuntimeError(
+            "Final lockbox refused: staged GDELT chunk count does not match the expected matrix."
         )
 
 
@@ -91,8 +167,10 @@ def main() -> None:
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
 
-    _assert_required_gdelt_coverage(staging)
+    _assert_required_gdelt_provenance(staging)
     dataset_hash = _staging_fingerprint(staging)
+    source_manifest_hash = _file_sha256(staging / "source_manifest.json")
+    staging_result_hash = _file_sha256(staging / "staging_result.json")
 
     market = load_market(staging / "normalized" / "market.csv")
     raw_macro = pd.read_csv(staging / "raw" / "macro_fred.csv")
@@ -109,7 +187,10 @@ def main() -> None:
         fred[series_id] = path
 
     macro = materialize_macro(market.index, fred, align_fred_point_in_time)
-    panel = market.join(macro.drop(columns=[c for c in macro.columns if c.endswith("_vintage")]), how="left")
+    panel = market.join(
+        macro.drop(columns=[c for c in macro.columns if c.endswith("_vintage")]),
+        how="left",
+    )
 
     events = []
     for name in ("events_gdelt.csv", "events_sec_litigation.csv"):
@@ -161,10 +242,20 @@ def main() -> None:
         protocol_version=PROTOCOL_VERSION,
         transaction_cost_bps=5.0,
         slippage_bps=0.0,
-        result_hashes=tuple(prediction_hashes + [("financial_report", report.result_hash)]),
+        result_hashes=tuple(
+            prediction_hashes
+            + [
+                ("financial_report", report.result_hash),
+                ("source_manifest", source_manifest_hash),
+                ("staging_result", staging_result_hash),
+            ]
+        ),
     )
     manifest_path = output / "lockbox_manifest.json"
-    manifest_path.write_text(json.dumps(manifest.as_dict(), sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(manifest.as_dict(), sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
     print(f"RESULT_HASH={report.result_hash}")
     print(f"LOCKBOX_MANIFEST_HASH={manifest.fingerprint()}")
     print(report.matrix.to_string(index=False))
