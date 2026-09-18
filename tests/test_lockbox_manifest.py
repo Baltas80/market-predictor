@@ -49,6 +49,9 @@ def test_complete_manifest_validates_and_fingerprints():
     serialized = manifest.as_dict()
     assert serialized["experiment_id"] == "exp-1234abcd5678"
     assert serialized["validation_ranges"] == []
+    assert serialized["git_commit"] == "a" * 40
+    assert serialized["source_hashes"][0][1] == "m" * 64
+    assert serialized["artifact_paths"] == ["data/results/financial_report.json"]
 
 
 @pytest.mark.parametrize(
