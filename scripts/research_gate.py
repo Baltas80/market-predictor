@@ -28,7 +28,7 @@ def main() -> None:
             "observation_date": index,
             "value": range(12),
             "vintage_start": index,
-            "vintage_end": index + pd.Timedelta(days=30),
+            "vintage_end": index + pd.to_timedelta(30, unit="D"),
         }
     )
     events = pd.DataFrame(
