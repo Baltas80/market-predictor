@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import date
+import re
 from typing import Any
 
 from .reproducibility import canonical_json_hash
@@ -50,8 +51,23 @@ class LockboxManifest:
             raise ValueError("execution costs cannot be negative")
         if not self.result_hashes:
             raise ValueError("result hashes are required")
-        if self.experiment_id and self.git_commit == "":
-            raise ValueError("git_commit is required when experiment_id is declared")
+        if self.experiment_id:
+            if not re.fullmatch(r"[0-9a-f]{40}", self.git_commit):
+                raise ValueError("git_commit must be a 40-character Git SHA for a final experiment")
+            required = {
+                "branch": self.branch,
+                "source_hashes": self.source_hashes,
+                "feature_hash": self.feature_hash,
+                "model": self.model,
+                "fold_definition": self.fold_definition,
+                "folds_hash": self.folds_hash,
+                "benchmark": self.benchmark,
+                "python_version": self.python_version,
+                "execution_timestamp": self.execution_timestamp,
+            }
+            missing = [name for name, value in required.items() if not value]
+            if missing:
+                raise ValueError(f"required final experiment provenance missing: {missing}")
 
     def as_dict(self) -> dict[str, Any]:
         self.validate()
@@ -59,14 +75,8 @@ class LockboxManifest:
         payload["oos_start"] = self.oos_start.isoformat()
         payload["oos_end"] = self.oos_end.isoformat()
         for field in (
-            "result_hashes",
-            "source_hashes",
-            "coverage",
-            "hyperparameters",
-            "train_ranges",
-            "validation_ranges",
-            "oos_ranges",
-            "dependencies",
+            "result_hashes", "source_hashes", "coverage", "hyperparameters",
+            "train_ranges", "validation_ranges", "oos_ranges", "dependencies",
         ):
             payload[field] = list(getattr(self, field))
         payload["seeds"] = list(self.seeds)
