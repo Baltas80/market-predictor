@@ -34,6 +34,34 @@ def test_d_protocol_and_lockbox_manifest_are_deterministic():
     assert manifest.fingerprint() == manifest.fingerprint()
 
 
+def test_lockbox_manifest_complete_provenance_round_trips():
+    manifest = LockboxManifest(
+        date(2025, 1, 1), date(2025, 12, 31), 5, "dataset", "commit", "v1", 5, 1,
+        (("A", "hash-a"),), experiment_id="exp-1", git_commit="commit",
+        branch="research/test", source_hashes=(("market.csv", "sha"),),
+        coverage=(("rows", 100),), feature_hash="features", model="logistic",
+        hyperparameters=(("max_iter", 2000),), seeds=(42,),
+        fold_definition="expanding", folds_hash="folds", train_ranges=(("a", "b"),),
+        validation_ranges=(), oos_ranges=(("c", "d"),), embargo=0,
+        benchmark="buy-and-hold", software_version="0.1.0", python_version="3.11",
+        dependencies=(("pandas", "2.2"),), artifact_paths=("predictions.csv",),
+        execution_timestamp="2026-09-18T00:00:00+00:00",
+    )
+    payload = manifest.as_dict()
+    assert payload["experiment_id"] == "exp-1"
+    assert payload["source_hashes"] == [["market.csv", "sha"]]
+    assert payload["coverage"] == [["rows", 100]]
+    assert payload["seeds"] == [42]
+    assert payload["artifact_paths"] == ["predictions.csv"]
+    assert payload["folds_hash"] == "folds"
+
+
+def test_lockbox_manifest_rejects_experiment_without_git_commit():
+    manifest = LockboxManifest(date(2025,1,1), date(2025,12,31), 5, "data", "code", "v1", 5, 2, (("A", "hash"),), experiment_id="exp")
+    with pytest.raises(ValueError, match="git_commit"):
+        manifest.validate()
+
+
 def test_paper_signal_requires_timezone():
     signal = PaperSignal("s1", datetime(2025,1,1,tzinfo=timezone.utc), .7, .8, 1, .1)
     signal.validate()
