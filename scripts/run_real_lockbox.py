@@ -153,7 +153,13 @@ def _assert_required_gdelt_provenance(staging: Path) -> None:
 
 def _load_production_c_events(staging: Path):
     """Load only the canonical GDELT 1.0 event source for production C."""
-    events = _load_production_c_events(staging)
+    gdelt_path = staging / "normalized" / "events_gdelt.csv"
+    if not gdelt_path.exists() or gdelt_path.stat().st_size == 0:
+        raise RuntimeError("No staged GDELT 1.0 events available for experiment C")
+    events = load_events_csv(gdelt_path)
+    events.sort(key=_event_sort_key)
+    if not events:
+        raise RuntimeError("No staged GDELT 1.0 events available for experiment C")
     return events
 
 
