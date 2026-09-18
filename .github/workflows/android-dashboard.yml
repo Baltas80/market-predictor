@@ -1,0 +1,35 @@
+name: Android Dashboard APK
+
+on:
+  push:
+    branches: ["feature/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build debug APK
+        run: gradle -p android-dashboard assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: market-predictor-dashboard-debug
+          path: android-dashboard/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
