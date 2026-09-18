@@ -30,7 +30,37 @@ def test_event_audit_is_per_decision():
 
 def test_d_protocol_and_lockbox_manifest_are_deterministic():
     assert build_d_protocol()["definition"] == "C + AI overlay"
-    manifest = LockboxManifest(date(2025,1,1), date(2025,12,31), 5, "data", "code", "v1", 5, 2, (("A", "hash"),))
+    manifest = LockboxManifest(
+        experiment_id="exp-2025-01-01",
+        git_commit="a" * 40,
+        branch="main",
+        dataset_hash="dataset-hash",
+        source_hashes=(("market", "market-hash"),),
+        coverage={"start": "2025-01-01", "end": "2025-12-31"},
+        feature_hash="feature-hash",
+        model="baseline",
+        hyperparameters={"depth": 3},
+        seeds=(42,),
+        fold_definition=({"train": ["2020-01-01", "2022-12-31"], "oos": ["2025-01-01", "2025-12-31"]},),
+        train_ranges=(("2020-01-01", "2022-12-31"),),
+        validation_ranges=(("2023-01-01", "2024-12-31"),),
+        oos_ranges=(("2025-01-01", "2025-12-31"),),
+        purge_gap=5,
+        embargo=2,
+        transaction_cost_bps=5.0,
+        slippage_bps=1.0,
+        benchmark="buy-and-hold",
+        software_version="test",
+        python_version="3.12",
+        dependencies=("pandas", "pytest"),
+        result_hashes=(("metrics", "result-hash"),),
+        artifact_paths=("artifacts/test.json",),
+        execution_timestamp="2025-12-31T23:59:59+00:00",
+        oos_start=date(2025,1,1),
+        oos_end=date(2025,12,31),
+        protocol_version="v1",
+        observations=100,
+    )
     assert manifest.fingerprint() == manifest.fingerprint()
 
 
