@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import json
 import os
+import platform
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -13,9 +16,16 @@ from market_predictor.data_sources import align_fred_point_in_time
 from market_predictor.dataset import load_market, materialize_macro
 from market_predictor.event_io import load_events_csv
 from market_predictor.final_financial_report import build_final_financial_report, write_financial_report
+from market_predictor.abc_protocol import folds_identity_hash
+from market_predictor.event_features import events_to_features
 from market_predictor.gdelt1 import GDELT_SOURCE_ID
 from market_predictor.lockbox_manifest import LockboxManifest
-from market_predictor.pipeline import PROTOCOL_VERSION, run_final_lockbox_event_experiments
+from market_predictor.pipeline import (
+    PROTOCOL_VERSION,
+    _shared_final_lockbox_folds,
+    prepare_baseline_data,
+    run_final_lockbox_event_experiments,
+)
 from market_predictor.reproducibility import canonical_json_hash
 
 
@@ -169,6 +179,26 @@ def _prediction_hash(frame: pd.DataFrame) -> str:
     return canonical_json_hash(records)
 
 
+def _range_from_positions(index: pd.Index, start: int, end: int) -> tuple[str, str]:
+    if end <= start:
+        raise ValueError("range end must be greater than range start")
+    return (
+        pd.Timestamp(index[start]).isoformat(),
+        pd.Timestamp(index[end - 1]).isoformat(),
+    )
+
+
+def _dependency_versions() -> tuple[str, ...]:
+    names = ("market-predictor", "numpy", "pandas", "scikit-learn", "requests")
+    versions = []
+    for name in names:
+        try:
+            versions.append(f"{name}=={importlib.metadata.version(name)}")
+        except importlib.metadata.PackageNotFoundError as exc:
+            raise RuntimeError(f"Required dependency version unavailable: {name}") from exc
+    return tuple(versions)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--staging", default="data/historical")
@@ -212,12 +242,39 @@ def main() -> None:
     if not events:
         raise RuntimeError("No staged GDELT 1.0 events available for experiment C")
 
+    horizon = 5
+    test_fraction = 0.2
     results = run_final_lockbox_event_experiments(
         panel,
         events,
-        horizon=5,
-        test_fraction=0.2,
+        horizon=horizon,
+        test_fraction=test_fraction,
         macro_features=list(FRED_SERIES),
+    )
+
+    prepared_event_data = panel.join(
+        events_to_features(panel.index, events, half_life_days=7.0),
+        how="left",
+    )
+    prepared = prepare_baseline_data(prepared_event_data, horizon=horizon)
+    folds = tuple(_shared_final_lockbox_folds(prepared, horizon, test_fraction))
+    train_ranges = tuple(
+        _range_from_positions(prepared.index, fold.train_start, fold.train_end)
+        for fold in folds
+    )
+    oos_ranges = tuple(
+        _range_from_positions(prepared.index, fold.test_start, fold.test_end)
+        for fold in folds
+    )
+    fold_definition = tuple(
+        {
+            "train_start": fold.train_start,
+            "train_end": fold.train_end,
+            "test_start": fold.test_start,
+            "test_end": fold.test_end,
+            "purge": horizon,
+        }
+        for fold in folds
     )
 
     predictions: dict[str, pd.DataFrame] = {}
@@ -244,15 +301,75 @@ def main() -> None:
     )
     write_financial_report(report, output)
 
+    git_commit = os.environ.get("GITHUB_SHA", "manual-local-run")
+    branch_name = os.environ.get("GITHUB_REF_NAME", "manual-local-run")
+    source_hashes = (
+        ("normalized/market.csv", _file_sha256(staging / "normalized/market.csv")),
+        ("raw/macro_fred.csv", _file_sha256(staging / "raw/macro_fred.csv")),
+        ("normalized/events_gdelt.csv", _file_sha256(staging / "normalized/events_gdelt.csv")),
+    )
+    feature_hash = canonical_json_hash(
+        {result.name: list(result.features) for result in results}
+    )
+    protocol_identity = canonical_json_hash(
+        {
+            "dataset_hash": dataset_hash,
+            "protocol_version": PROTOCOL_VERSION,
+            "folds_hash": folds_identity_hash(folds),
+            "features": {result.name: list(result.features) for result in results},
+        }
+    )
+    experiment_id = f"exp-{protocol_identity[:16]}"
+    dependencies = _dependency_versions()
+    artifact_paths = tuple(
+        [
+            "data/results/lockbox_manifest.json",
+            "data/results/financial_matrix.csv",
+            "data/results/financial_stability.csv",
+            "data/results/financial_report.json",
+            "data/results/financial_report.md",
+        ]
+        + [f"data/results/predictions_{result.name}.csv" for result in results]
+    )
+    execution_timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
     manifest = LockboxManifest(
-        oos_start=pd.Timestamp(lockbox_index[0]).date(),
-        oos_end=pd.Timestamp(lockbox_index[-1]).date(),
-        purge_gap=5,
+        experiment_id=experiment_id,
+        git_commit=git_commit,
+        branch=branch_name,
         dataset_hash=dataset_hash,
-        code_version=os.environ.get("GITHUB_SHA", "manual-local-run"),
-        protocol_version=PROTOCOL_VERSION,
+        source_hashes=source_hashes,
+        coverage={
+            "market_start": pd.Timestamp(prepared.index[0]).isoformat(),
+            "market_end": pd.Timestamp(prepared.index[-1]).isoformat(),
+            "observations": len(prepared),
+            "gdelt_rows": len(events),
+            "oos_start": pd.Timestamp(lockbox_index[0]).isoformat(),
+            "oos_end": pd.Timestamp(lockbox_index[-1]).isoformat(),
+        },
+        feature_hash=feature_hash,
+        model="StandardScaler + LogisticRegression",
+        hyperparameters={
+            "max_iter": 2000,
+            "random_state": 42,
+            "horizon": horizon,
+            "test_fraction": test_fraction,
+            "financial_threshold": 0.5,
+            "event_half_life_days": 7.0,
+        },
+        seeds=(42,),
+        fold_definition=fold_definition,
+        train_ranges=train_ranges,
+        validation_ranges=(),
+        oos_ranges=oos_ranges,
+        purge_gap=horizon,
+        embargo=0,
         transaction_cost_bps=5.0,
         slippage_bps=0.0,
+        benchmark="buy_and_hold_close",
+        software_version=importlib.metadata.version("market-predictor"),
+        python_version=platform.python_version(),
+        dependencies=dependencies,
         result_hashes=tuple(
             prediction_hashes
             + [
@@ -261,6 +378,12 @@ def main() -> None:
                 ("staging_result", staging_result_hash),
             ]
         ),
+        artifact_paths=artifact_paths,
+        execution_timestamp=execution_timestamp,
+        oos_start=pd.Timestamp(lockbox_index[0]).date(),
+        oos_end=pd.Timestamp(lockbox_index[-1]).date(),
+        protocol_version=PROTOCOL_VERSION,
+        observations=len(prepared),
     )
     manifest_path = output / "lockbox_manifest.json"
     manifest_path.write_text(
