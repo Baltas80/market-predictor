@@ -3,27 +3,29 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import json
 import os
+import platform
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 
 from market_predictor.data_sources import align_fred_point_in_time
 from market_predictor.dataset import load_market, materialize_macro
+from market_predictor.event_features import events_to_features
 from market_predictor.event_io import load_events_csv
 from market_predictor.final_financial_report import build_final_financial_report, write_financial_report
 from market_predictor.gdelt1 import GDELT_SOURCE_ID
 from market_predictor.lockbox_manifest import LockboxManifest
-from market_predictor.pipeline import PROTOCOL_VERSION, run_final_lockbox_event_experiments
+from market_predictor.pipeline import PROTOCOL_VERSION, _shared_final_lockbox_folds, prepare_baseline_data, run_final_lockbox_event_experiments
 from market_predictor.reproducibility import canonical_json_hash
-
 
 FRED_SERIES = ("FEDFUNDS", "DGS10", "CPIAUCSL", "UNRATE", "VIXCLS")
 
 
 def _event_sort_key(event) -> pd.Timestamp:
-    """Order events by information availability, not unknown publication time."""
     available = pd.Timestamp(event.available_at)
     if pd.notna(available):
         return available
@@ -40,238 +42,124 @@ def _file_sha256(path: Path) -> str:
 
 
 def _staging_fingerprint(staging: Path) -> str:
-    """Hash every normalized input file used by the final lockbox."""
-    paths = [
-        staging / "normalized" / "market.csv",
-        staging / "raw" / "macro_fred.csv",
-        staging / "normalized" / "events_gdelt.csv",
-        staging / "normalized" / "events_sec_litigation.csv",
-    ]
+    paths = [staging / "normalized" / "market.csv", staging / "raw" / "macro_fred.csv", staging / "normalized" / "events_gdelt.csv", staging / "normalized" / "events_sec_litigation.csv"]
     digest = hashlib.sha256()
     found = False
     for path in sorted(paths, key=lambda item: str(item)):
         if not path.exists() or path.stat().st_size == 0:
             continue
         found = True
-        digest.update(str(path.relative_to(staging)).encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-        digest.update(b"\0")
+        digest.update(str(path.relative_to(staging)).encode("utf-8")); digest.update(b"\0"); digest.update(path.read_bytes()); digest.update(b"\0")
     if not found:
         raise RuntimeError("No normalized staging inputs available for dataset fingerprint")
     return digest.hexdigest()
 
 
+def _source_hashes(staging: Path) -> tuple[tuple[str, str], ...]:
+    paths = (staging / "normalized" / "market.csv", staging / "raw" / "macro_fred.csv", staging / "normalized" / "events_gdelt.csv", staging / "normalized" / "events_sec_litigation.csv")
+    return tuple((str(path.relative_to(staging)), _file_sha256(path)) for path in sorted(paths, key=lambda item: str(item)) if path.exists() and path.stat().st_size > 0)
+
+
 def _assert_required_gdelt_provenance(staging: Path) -> None:
-    """Fail closed unless final staging proves canonical GDELT 1.0 provenance."""
     missing_path = staging / "raw" / "events_gdelt_missing.csv"
     if not missing_path.exists():
-        raise RuntimeError(
-            "Final lockbox refused: required GDELT gap manifest is missing; "
-            "completeness cannot be demonstrated."
-        )
+        raise RuntimeError("Final lockbox refused: required GDELT gap manifest is missing; completeness cannot be demonstrated.")
     missing = pd.read_csv(missing_path)
     if not missing.empty:
         if "source_id" not in missing.columns:
-            raise RuntimeError(
-                "Final lockbox refused: GDELT gap manifest has no source_id; "
-                "completeness cannot be attributed to the canonical source."
-            )
+            raise RuntimeError("Final lockbox refused: GDELT gap manifest has no source_id; completeness cannot be attributed to the canonical source.")
         required = missing.loc[missing["source_id"] == GDELT_SOURCE_ID]
         noncanonical = missing.loc[missing["source_id"] != GDELT_SOURCE_ID]
         if not noncanonical.empty:
-            raise RuntimeError(
-                "Final lockbox refused: GDELT gap manifest contains non-canonical "
-                f"source identifiers: {sorted(set(noncanonical['source_id'].astype(str)))}"
-            )
+            raise RuntimeError("Final lockbox refused: GDELT gap manifest contains non-canonical source identifiers: " + str(sorted(set(noncanonical["source_id"].astype(str)))))
         if not required.empty:
-            raise RuntimeError(
-                f"Final lockbox refused: {len(required)} required GDELT source-days remain missing. "
-                "Resolve the historical ingestion gaps before generating A/B/C or the financial report."
-            )
-
-    manifest_path = staging / "source_manifest.json"
-    result_path = staging / "staging_result.json"
+            raise RuntimeError(f"Final lockbox refused: {len(required)} required GDELT source-days remain missing. Resolve the historical ingestion gaps before generating A/B/C or the financial report.")
+    manifest_path = staging / "source_manifest.json"; result_path = staging / "staging_result.json"
     if not manifest_path.exists() or not result_path.exists():
-        raise RuntimeError(
-            "Final lockbox refused: source_manifest.json and staging_result.json "
-            "are required provenance artifacts."
-        )
-
+        raise RuntimeError("Final lockbox refused: source_manifest.json and staging_result.json are required provenance artifacts.")
     try:
-        source_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        staging_result = json.loads(result_path.read_text(encoding="utf-8"))
+        source_manifest = json.loads(manifest_path.read_text(encoding="utf-8")); staging_result = json.loads(result_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(
-            f"Final lockbox refused: provenance artifacts are unreadable: {type(exc).__name__}"
-        ) from exc
-
-    gdelt_manifests = [
-        item for item in source_manifest
-        if item.get("source_id") == GDELT_SOURCE_ID
-    ]
-    noncanonical_manifest_ids = sorted(
-        {
-            str(item.get("source_id"))
-            for item in source_manifest
-            if str(item.get("source_id", "")).startswith("GDELT_")
-            and item.get("source_id") != GDELT_SOURCE_ID
-        }
-    )
+        raise RuntimeError(f"Final lockbox refused: provenance artifacts are unreadable: {type(exc).__name__}") from exc
+    gdelt_manifests = [item for item in source_manifest if item.get("source_id") == GDELT_SOURCE_ID]
+    noncanonical_manifest_ids = sorted({str(item.get("source_id")) for item in source_manifest if str(item.get("source_id", "")).startswith("GDELT_") and item.get("source_id") != GDELT_SOURCE_ID})
     if noncanonical_manifest_ids:
-        raise RuntimeError(
-            "Final lockbox refused: source manifest contains non-canonical GDELT "
-            f"identifiers: {noncanonical_manifest_ids}"
-        )
+        raise RuntimeError("Final lockbox refused: source manifest contains non-canonical GDELT identifiers: " + str(noncanonical_manifest_ids))
     if len(gdelt_manifests) != 1:
-        raise RuntimeError(
-            "Final lockbox refused: expected exactly one canonical GDELT 1.0 "
-            f"source manifest, found {len(gdelt_manifests)}."
-        )
-
+        raise RuntimeError(f"Final lockbox refused: expected exactly one canonical GDELT 1.0 source manifest, found {len(gdelt_manifests)}.")
     policy = str(gdelt_manifests[0].get("availability_policy", ""))
     if "next-day 06:00 America/New_York" not in policy:
-        raise RuntimeError(
-            "Final lockbox refused: canonical GDELT 1.0 PIT availability policy "
-            "is not declared as the approved next-day 06:00 America/New_York boundary."
-        )
-
+        raise RuntimeError("Final lockbox refused: canonical GDELT 1.0 PIT availability policy is not declared as the approved next-day 06:00 America/New_York boundary.")
     if staging_result.get("status") not in {"admissible", "admissible_with_source_limits"}:
-        raise RuntimeError(
-            "Final lockbox refused: staging result is not admissible: "
-            f"{staging_result.get('status')!r}"
-        )
+        raise RuntimeError("Final lockbox refused: staging result is not admissible: " + repr(staging_result.get("status")))
     if staging_result.get("gdelt_missing_day_count") != 0:
-        raise RuntimeError(
-            "Final lockbox refused: staging result reports non-zero GDELT missing-day count."
-        )
+        raise RuntimeError("Final lockbox refused: staging result reports non-zero GDELT missing-day count.")
     if staging_result.get("gdelt_chunk_count") != staging_result.get("gdelt_expected_chunk_count"):
-        raise RuntimeError(
-            "Final lockbox refused: staged GDELT chunk count does not match the expected matrix."
-        )
+        raise RuntimeError("Final lockbox refused: staged GDELT chunk count does not match the expected matrix.")
 
 
 def _load_production_c_events(staging: Path):
-    """Load only the canonical GDELT 1.0 event source for production C."""
     gdelt_path = staging / "normalized" / "events_gdelt.csv"
     if not gdelt_path.exists() or gdelt_path.stat().st_size == 0:
         raise RuntimeError("No staged GDELT 1.0 events available for experiment C")
-    events = load_events_csv(gdelt_path)
-    events.sort(key=_event_sort_key)
+    events = load_events_csv(gdelt_path); events.sort(key=_event_sort_key)
     if not events:
         raise RuntimeError("No staged GDELT 1.0 events available for experiment C")
     return events
 
 
 def _prediction_hash(frame: pd.DataFrame) -> str:
-    """Hash the complete OOS prediction frame deterministically."""
     records = frame.reset_index().astype(object).where(pd.notna(frame), None).to_dict(orient="records")
     return canonical_json_hash(records)
 
 
+def _package_versions() -> tuple[tuple[str, str], ...]:
+    names = ("market-predictor", "numpy", "pandas", "scikit-learn", "requests")
+    versions = []
+    for name in names:
+        try: versions.append((name, importlib.metadata.version(name)))
+        except importlib.metadata.PackageNotFoundError: versions.append((name, "not-installed"))
+    return tuple(versions)
+
+
+def _timestamp_ranges(index: pd.DatetimeIndex, folds, *, test: bool) -> tuple[tuple[str, str], ...]:
+    ranges = []
+    for fold in folds:
+        start = pd.Timestamp(index[fold.test_start if test else fold.train_start]).isoformat()
+        end = pd.Timestamp(index[fold.test_end - 1 if test else fold.train_end - 1]).isoformat()
+        ranges.append((start, end))
+    return tuple(ranges)
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--staging", default="data/historical")
-    parser.add_argument("--output", default="data/results")
-    args = parser.parse_args()
-
-    staging = Path(args.staging)
-    output = Path(args.output)
-    output.mkdir(parents=True, exist_ok=True)
-
+    parser = argparse.ArgumentParser(); parser.add_argument("--staging", default="data/historical"); parser.add_argument("--output", default="data/results"); args = parser.parse_args()
+    staging = Path(args.staging); output = Path(args.output); output.mkdir(parents=True, exist_ok=True)
     _assert_required_gdelt_provenance(staging)
-    dataset_hash = _staging_fingerprint(staging)
-    source_manifest_hash = _file_sha256(staging / "source_manifest.json")
-    staging_result_hash = _file_sha256(staging / "staging_result.json")
-
-    market = load_market(staging / "normalized" / "market.csv")
-    raw_macro = pd.read_csv(staging / "raw" / "macro_fred.csv")
+    dataset_hash = _staging_fingerprint(staging); source_manifest_hash = _file_sha256(staging / "source_manifest.json"); staging_result_hash = _file_sha256(staging / "staging_result.json"); source_hashes = _source_hashes(staging)
+    market = load_market(staging / "normalized" / "market.csv"); raw_macro = pd.read_csv(staging / "raw" / "macro_fred.csv")
     fred: dict[str, Path] = {}
     for series_id in FRED_SERIES:
-        subset = raw_macro.loc[
-            raw_macro["series_id"] == series_id,
-            ["observation_date", "value", "vintage_start", "vintage_end"],
-        ]
-        if subset.empty:
-            raise RuntimeError(f"Missing required FRED series in staged data: {series_id}")
-        path = output / f"fred_{series_id}.csv"
-        subset.to_csv(path, index=False)
-        fred[series_id] = path
-
+        subset = raw_macro.loc[raw_macro["series_id"] == series_id, ["observation_date", "value", "vintage_start", "vintage_end"]]
+        if subset.empty: raise RuntimeError(f"Missing required FRED series in staged data: {series_id}")
+        path = output / f"fred_{series_id}.csv"; subset.to_csv(path, index=False); fred[series_id] = path
     macro = materialize_macro(market.index, fred, align_fred_point_in_time)
-    panel = market.join(
-        macro.drop(columns=[c for c in macro.columns if c.endswith("_vintage")]),
-        how="left",
-    )
-
-    gdelt_path = staging / "normalized" / "events_gdelt.csv"
-    if not gdelt_path.exists() or gdelt_path.stat().st_size == 0:
-        raise RuntimeError("No staged GDELT 1.0 events available for experiment C")
-    events = load_events_csv(gdelt_path)
-    events.sort(key=_event_sort_key)
-    if not events:
-        raise RuntimeError("No staged GDELT 1.0 events available for experiment C")
-
-    results = run_final_lockbox_event_experiments(
-        panel,
-        events,
-        horizon=5,
-        test_fraction=0.2,
-        macro_features=list(FRED_SERIES),
-    )
-
-    predictions: dict[str, pd.DataFrame] = {}
-    prediction_hashes: list[tuple[str, str]] = []
+    panel = market.join(macro.drop(columns=[c for c in macro.columns if c.endswith("_vintage")]), how="left")
+    events = _load_production_c_events(staging); event_data = events_to_features(panel.index, events, half_life_days=7.0); enriched = panel.join(event_data, how="left")
+    prepared = prepare_baseline_data(enriched, horizon=5); folds = _shared_final_lockbox_folds(prepared, horizon=5, test_fraction=0.2)
+    folds_hash = canonical_json_hash([{"train_start": f.train_start, "train_end": f.train_end, "test_start": f.test_start, "test_end": f.test_end} for f in folds])
+    results = run_final_lockbox_event_experiments(panel, events, horizon=5, test_fraction=0.2, macro_features=list(FRED_SERIES), event_features=list(event_data.columns))
+    predictions: dict[str, pd.DataFrame] = {}; prediction_hashes: list[tuple[str, str]] = []
     for result in results:
-        frame = result.predictions.join(panel[["close"]], how="left")
-        predictions[result.name] = frame
-        prediction_hashes.append((result.name, _prediction_hash(frame)))
-        frame.to_csv(output / f"predictions_{result.name}.csv")
-
-    lockbox_index = next(iter(predictions.values())).index
-    benchmark = panel.loc[lockbox_index, ["close"]].copy()
-    periods = {
-        "lockbox_early": ("2021-01-01", "2022-12-31"),
-        "lockbox_middle": ("2023-01-01", "2024-12-31"),
-        "lockbox_late": ("2025-01-01", "2025-12-31"),
-    }
-    report = build_final_financial_report(
-        predictions,
-        benchmark=benchmark,
-        periods=periods,
-        transaction_cost_bps=5.0,
-        slippage_bps=0.0,
-    )
-    write_financial_report(report, output)
-
-    manifest = LockboxManifest(
-        oos_start=pd.Timestamp(lockbox_index[0]).date(),
-        oos_end=pd.Timestamp(lockbox_index[-1]).date(),
-        purge_gap=5,
-        dataset_hash=dataset_hash,
-        code_version=os.environ.get("GITHUB_SHA", "manual-local-run"),
-        protocol_version=PROTOCOL_VERSION,
-        transaction_cost_bps=5.0,
-        slippage_bps=0.0,
-        result_hashes=tuple(
-            prediction_hashes
-            + [
-                ("financial_report", report.result_hash),
-                ("source_manifest", source_manifest_hash),
-                ("staging_result", staging_result_hash),
-            ]
-        ),
-    )
-    manifest_path = output / "lockbox_manifest.json"
-    manifest_path.write_text(
-        json.dumps(manifest.as_dict(), sort_keys=True, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    print(f"RESULT_HASH={report.result_hash}")
-    print(f"LOCKBOX_MANIFEST_HASH={manifest.fingerprint()}")
-    print(report.matrix.to_string(index=False))
-    print(report.stability.to_string(index=False))
+        frame = result.predictions.join(panel[["close"]], how="left"); predictions[result.name] = frame; prediction_hashes.append((result.name, _prediction_hash(frame))); frame.to_csv(output / f"predictions_{result.name}.csv")
+    lockbox_index = next(iter(predictions.values())).index; benchmark = panel.loc[lockbox_index, ["close"]].copy()
+    periods = {"lockbox_early": ("2021-01-01", "2022-12-31"), "lockbox_middle": ("2023-01-01", "2024-12-31"), "lockbox_late": ("2025-01-01", "2025-12-31")}
+    report = build_final_financial_report(predictions, benchmark=benchmark, periods=periods, transaction_cost_bps=5.0, slippage_bps=0.0); write_financial_report(report, output)
+    feature_hash = canonical_json_hash({result.name: list(result.features) for result in results}); coverage = (("market_rows", int(len(market))), ("macro_rows", int(len(raw_macro))), ("event_rows", int(len(events))), ("prepared_rows", int(len(prepared))), ("oos_predictions", int(len(lockbox_index))))
+    train_ranges = _timestamp_ranges(prepared.index, folds, test=False); oos_ranges = _timestamp_ranges(prepared.index, folds, test=True); git_commit = os.environ.get("GITHUB_SHA", "manual-local-run"); branch = os.environ.get("GITHUB_REF_NAME", "research/lockbox-reproducibility-manifest"); dependencies = _package_versions()
+    experiment_id = canonical_json_hash({"dataset_hash": dataset_hash, "feature_hash": feature_hash, "protocol_version": PROTOCOL_VERSION, "folds_hash": folds_hash, "horizon": 5, "test_fraction": 0.2, "transaction_cost_bps": 5.0, "slippage_bps": 0.0}); execution_timestamp = datetime.now(timezone.utc).isoformat(); artifact_paths = tuple(sorted(str(path.relative_to(output)) for path in output.glob("*") if path.is_file()))
+    manifest = LockboxManifest(oos_start=pd.Timestamp(lockbox_index[0]).date(), oos_end=pd.Timestamp(lockbox_index[-1]).date(), purge_gap=5, dataset_hash=dataset_hash, code_version=git_commit, protocol_version=PROTOCOL_VERSION, transaction_cost_bps=5.0, slippage_bps=0.0, result_hashes=tuple(prediction_hashes + [("financial_report", report.result_hash), ("source_manifest", source_manifest_hash), ("staging_result", staging_result_hash)]), experiment_id=experiment_id, git_commit=git_commit, branch=branch, source_hashes=source_hashes, coverage=coverage, feature_hash=feature_hash, model="StandardScaler + LogisticRegression(max_iter=2000, random_state=42)", hyperparameters=(("max_iter", 2000), ("random_state", 42)), seeds=(42,), fold_definition="common expanding-window final lockbox; purge=horizon=5", folds_hash=folds_hash, train_ranges=train_ranges, validation_ranges=(), oos_ranges=oos_ranges, embargo=0, benchmark="S&P 500 close / buy-and-hold reference", software_version=next((value for name, value in dependencies if name == "market-predictor"), "unknown"), python_version=platform.python_version(), dependencies=dependencies, artifact_paths=artifact_paths, execution_timestamp=execution_timestamp)
+    manifest_path = output / "lockbox_manifest.json"; manifest_path.write_text(json.dumps(manifest.as_dict(), sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    print(f"RESULT_HASH={report.result_hash}"); print(f"LOCKBOX_MANIFEST_HASH={manifest.fingerprint()}"); print(report.matrix.to_string(index=False)); print(report.stability.to_string(index=False))
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()
