@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -14,7 +15,7 @@ def test_multiclass_model_exposes_down_flat_up_probabilities():
     assert list(probabilities.columns) == ["prob_down", "prob_flat", "prob_up"]
     assert list(predictions.index) == list(x_test.index)
     assert set(predictions.unique()).issubset(set(DIRECTION_CLASSES))
-    assert (probabilities.sum(axis=1) == pytest.approx(1.0)).all()
+    assert np.allclose(probabilities.sum(axis=1).to_numpy(), 1.0)
 
 
 def test_multiclass_model_fails_closed_when_training_class_is_missing():
