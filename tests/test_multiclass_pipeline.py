@@ -5,36 +5,40 @@ from market_predictor.multiclass_pipeline import run_multiclass_baseline
 
 
 def test_multiclass_pipeline_returns_all_direction_probabilities(monkeypatch):
-    index = pd.date_range("2020-01-01", periods=40, tz="UTC", freq="D")
-    close = np.linspace(100.0, 120.0, len(index))
+    index = pd.date_range("2020-01-01", periods=80, tz="UTC", freq="D")
+    close = 100.0 + np.sin(np.arange(len(index)) / 2.0) * 5.0 + np.arange(len(index)) * 0.05
     frame = pd.DataFrame(
         {
             "open": close,
-            "high": close + 1,
-            "low": close - 1,
+            "high": close + 1.0,
+            "low": close - 1.0,
             "close": close,
             "volume": np.full(len(index), 1000.0),
         },
         index=index,
     )
 
-    def fake_runner(*args, **kwargs):
-        result = pd.DataFrame(
-            {
-                "prob_down": [0.8, 0.1, 0.2],
-                "prob_flat": [0.1, 0.2, 0.2],
-                "prob_up": [0.1, 0.7, 0.6],
-                "actual_direction": [-1, 0, 1],
-                "predicted_direction": [-1, 1, 1],
-            },
-            index=index[-3:],
+    def fake_fit_predict(x_train, y_train, x_test):
+        n = len(x_test)
+        probs = pd.DataFrame(
+            np.tile([[0.2, 0.2, 0.6]], (n, 1)),
+            index=x_test.index,
+            columns=["prob_down", "prob_flat", "prob_up"],
         )
-        return result, []
+        predicted = pd.Series(1, index=x_test.index, name="predicted_direction")
+        return object(), probs, predicted
 
     monkeypatch.setattr(
-        "market_predictor.multiclass_pipeline.make_walk_forward_folds",
-        lambda *args, **kwargs: [],
+        "market_predictor.multiclass_pipeline.fit_predict_multiclass",
+        fake_fit_predict,
     )
     result, evaluations = run_multiclass_baseline(frame)
-    assert evaluations == []
-    assert result.empty
+    assert not result.empty
+    assert list(result.columns) == [
+        "prob_down",
+        "prob_flat",
+        "prob_up",
+        "actual_direction",
+        "predicted_direction",
+    ]
+    assert len(evaluations) == 3
