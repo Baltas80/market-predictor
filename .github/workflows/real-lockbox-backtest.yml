@@ -76,8 +76,6 @@ jobs:
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import datetime, json
-          # GDELT 1.0 daily event archives begin on 2015-02-19 in this project.
-          # Do not create impossible source-day gaps for dates before the dataset existed.
           start = datetime.date(2015, 2, 19)
           end = datetime.date(2025, 12, 31)
           rows = []
@@ -95,6 +93,9 @@ jobs:
   gdelt-chunks:
     name: GDELT ${{ matrix.start }} → ${{ matrix.end }}
     needs: prepare-gdelt-matrix
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare-gdelt-matrix.outputs.matrix) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -197,15 +198,7 @@ jobs:
               checkpoint = recovery / f"gdelt_{day}_days"
               print(f"Recovering GDELT source-day {day}", flush=True)
               subprocess.run(
-                  [
-                      sys.executable,
-                      "scripts/ingest_gdelt_chunk.py",
-                      "--start", day,
-                      "--end", day,
-                      "--output", str(output),
-                      "--missing-output", str(missing),
-                      "--checkpoint-dir", str(checkpoint),
-                  ],
+                  [sys.executable, "scripts/ingest_gdelt_chunk.py", "--start", day, "--end", day, "--output", str(output), "--missing-output", str(missing), "--checkpoint-dir", str(checkpoint)],
                   check=True,
               )
           PY
@@ -227,9 +220,7 @@ jobs:
               if not frame.empty:
                   data_frames.append(frame)
           if data_frames:
-              pd.concat(data_frames, ignore_index=True).to_csv(
-                  recovery / "gdelt_recovered.csv", index=False, lineterminator="\n"
-              )
+              pd.concat(data_frames, ignore_index=True).to_csv(recovery / "gdelt_recovered.csv", index=False, lineterminator="\n")
           else:
               (recovery / "gdelt_recovered.csv").write_text("\n", encoding="utf-8")
 
@@ -242,9 +233,7 @@ jobs:
               if not frame.empty:
                   missing_frames.append(frame)
           if missing_frames:
-              pd.concat(missing_frames, ignore_index=True).to_csv(
-                  recovery / "gdelt_recovery_missing.csv", index=False, lineterminator="\n"
-              )
+              pd.concat(missing_frames, ignore_index=True).to_csv(recovery / "gdelt_recovery_missing.csv", index=False, lineterminator="\n")
           else:
               (recovery / "gdelt_recovery_missing.csv").write_text("date,source_id,status,error_type,error\n", encoding="utf-8")
           PY
