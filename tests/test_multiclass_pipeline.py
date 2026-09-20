@@ -81,7 +81,6 @@ def test_multiclass_pipeline_rejects_unsorted_or_duplicate_timestamps():
     frame = _frame(index)
     with pytest.raises(ValueError):
         run_multiclass_baseline(frame.sort_index(ascending=False))
-    duplicate = frame.copy()
-    duplicate.index = index.insert(5, index[5])
+    duplicate = pd.concat([frame.iloc[:6], frame.iloc[[5]], frame.iloc[6:]])
     with pytest.raises(ValueError):
         run_multiclass_baseline(duplicate)
