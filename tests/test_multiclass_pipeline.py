@@ -44,7 +44,7 @@ def test_multiclass_pipeline_returns_probabilities_and_timestamp_audit(monkeypat
         "predicted_direction", "fold_id", "train_start", "train_end",
         "test_start", "test_end", "purge_rule", "embargo", "embargo_rule",
     }.issubset(result.columns)
-    assert len(evaluations) == 3
+    assert len(evaluations) == 4
     assert (result["purge_rule"] == "label_end_time < test_start").all()
     assert (result["embargo_rule"] == "train_timestamp < test_start - embargo").all()
 
