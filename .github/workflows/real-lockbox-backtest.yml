@@ -97,10 +97,6 @@ jobs:
     needs: prepare-gdelt-matrix
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix: ${{ fromJSON(needs.prepare-gdelt-matrix.outputs.matrix) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -152,7 +148,7 @@ jobs:
     name: RECOVER GDELT GAPS ONLY
     needs: gdelt-chunks
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 180
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -169,19 +165,96 @@ jobs:
           pattern: gdelt-*
           path: data/gdelt_chunks
           merge-multiple: true
-      - name: Retry only recorded missing source-days
+      - name: Retry only recorded missing source-days with canonical loader
+        shell: bash
         run: |
-          python scripts/recover_gdelt_gaps.py \
-            --chunks data/gdelt_chunks \
-            --output data/gdelt_chunks/gdelt_recovered.csv \
-            --remaining-output data/gdelt_chunks/gdelt_recovery_missing.csv
+          set -euo pipefail
+          mkdir -p data/gdelt_recovery
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          import subprocess
+          import sys
+
+          chunks = Path("data/gdelt_chunks")
+          recovery = Path("data/gdelt_recovery")
+          manifests = sorted(chunks.glob("gdelt_*_missing.csv"))
+          dates = set()
+          for path in manifests:
+              try:
+                  frame = pd.read_csv(path)
+              except pd.errors.EmptyDataError:
+                  continue
+              if frame.empty or "date" not in frame.columns:
+                  continue
+              for value in frame["date"].dropna().astype(str):
+                  dates.add(value[:10])
+
+          print(f"Recorded GDELT gap source-days: {len(dates)}")
+          for day in sorted(dates):
+              output = recovery / f"gdelt_{day}.csv"
+              missing = recovery / f"gdelt_{day}_missing.csv"
+              checkpoint = recovery / f"gdelt_{day}_days"
+              print(f"Recovering GDELT source-day {day}", flush=True)
+              subprocess.run(
+                  [
+                      sys.executable,
+                      "scripts/ingest_gdelt_chunk.py",
+                      "--start", day,
+                      "--end", day,
+                      "--output", str(output),
+                      "--missing-output", str(missing),
+                      "--checkpoint-dir", str(checkpoint),
+                  ],
+                  check=True,
+              )
+          PY
+      - name: Assemble recovery manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+
+          recovery = Path("data/gdelt_recovery")
+          data_files = sorted(recovery.glob("gdelt_????-??-??.csv"))
+          missing_files = sorted(recovery.glob("gdelt_????-??-??_missing.csv"))
+
+          data_frames = []
+          for path in data_files:
+              frame = pd.read_csv(path)
+              if not frame.empty:
+                  data_frames.append(frame)
+          if data_frames:
+              pd.concat(data_frames, ignore_index=True).to_csv(
+                  recovery / "gdelt_recovered.csv", index=False, lineterminator="\n"
+              )
+          else:
+              (recovery / "gdelt_recovered.csv").write_text("\n", encoding="utf-8")
+
+          missing_frames = []
+          for path in missing_files:
+              try:
+                  frame = pd.read_csv(path)
+              except pd.errors.EmptyDataError:
+                  continue
+              if not frame.empty:
+                  missing_frames.append(frame)
+          if missing_frames:
+              pd.concat(missing_frames, ignore_index=True).to_csv(
+                  recovery / "gdelt_recovery_missing.csv", index=False, lineterminator="\n"
+              )
+          else:
+              (recovery / "gdelt_recovery_missing.csv").write_text("date,source_id,status,error_type,error\n", encoding="utf-8")
+          PY
       - name: Upload recovery results
         uses: actions/upload-artifact@v7
         with:
           name: gdelt-recovery-${{ github.sha }}
           path: |
-            data/gdelt_chunks/gdelt_recovered.csv
-            data/gdelt_chunks/gdelt_recovery_missing.csv
+            data/gdelt_recovery/gdelt_recovered.csv
+            data/gdelt_recovery/gdelt_recovery_missing.csv
           if-no-files-found: error
           retention-days: 7
 
