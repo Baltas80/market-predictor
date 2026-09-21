@@ -1,8 +1,7 @@
 """Download bounded GDELT 1.0 historical chunks with resumable checkpoints.
 
-The source parser and PIT boundary are canonicalized in
-``market_predictor.gdelt1``. This script owns only chunking, retries,
-checkpointing and gap reporting.
+The source parser and PIT boundary are canonicalized in market_predictor.gdelt1.
+This script owns chunking, retries, checkpointing and gap reporting.
 """
 from __future__ import annotations
 
@@ -27,11 +26,16 @@ from market_predictor.research_schema import deduplicate_events, normalize_event
 GDELT_DAY_RETRIES = 4
 GDELT_RETRY_BASE_SECONDS = 2
 GDELT_CHECKPOINT_VERSION = "gdelt1-pit-v4"
+GDELT_OUTPUT_CHUNK_ROWS = 50_000
 
+_EVENT_COLUMNS = [
+    "event_id", "event_time", "published_at", "available_at", "source_id",
+    "category", "severity", "country", "entity", "sector", "duration_days",
+    "media_intensity", "surprise",
+]
 
 def _checkpoint_path(checkpoint_dir: Path, day: str) -> Path:
     return checkpoint_dir / f"day_{pd.Timestamp(day).date().isoformat()}.csv"
-
 
 def _read_checkpoint(path: Path) -> pd.DataFrame:
     frame = pd.read_csv(path)
@@ -52,8 +56,30 @@ def _read_checkpoint(path: Path) -> pd.DataFrame:
         raise ValueError("GDELT checkpoint contains a non-canonical source identifier; redownloading")
     return frame
 
+def _empty_event_frame() -> pd.DataFrame:
+    return pd.DataFrame(columns=_EVENT_COLUMNS)
 
-def fetch_gdelt_chunk(start: str, end: str, checkpoint_dir: Path | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _stream_checkpoints_to_csv(checkpoint_dir: Path, output: Path, start_date, end_date) -> int:
+    """Materialize checkpoints sequentially without building a global DataFrame."""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.unlink(missing_ok=True)
+    wrote = False
+    rows_written = 0
+    current = start_date
+    while current <= end_date:
+        checkpoint = _checkpoint_path(checkpoint_dir, current.isoformat())
+        if checkpoint.exists():
+            for chunk in pd.read_csv(checkpoint, chunksize=GDELT_OUTPUT_CHUNK_ROWS):
+                chunk = chunk.drop(columns=["checkpoint_version"], errors="ignore")
+                chunk.to_csv(output, mode="a", header=not wrote, index=False, lineterminator="\n", date_format="%Y-%m-%dT%H:%M:%S%z")
+                wrote = True
+                rows_written += len(chunk)
+        current += timedelta(days=1)
+    if not wrote:
+        _empty_event_frame().to_csv(output, index=False, lineterminator="\n")
+    return rows_written
+
+def fetch_gdelt_chunk(start: str, end: str, checkpoint_dir: Path | None = None, *, collect_frames: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
     start_date = pd.Timestamp(start).date()
     end_date = pd.Timestamp(end).date()
     if end_date < start_date:
@@ -73,7 +99,8 @@ def fetch_gdelt_chunk(start: str, end: str, checkpoint_dir: Path | None = None) 
         if checkpoint.exists():
             try:
                 restored_frame = _read_checkpoint(checkpoint)
-                frames.append(restored_frame)
+                if collect_frames:
+                    frames.append(restored_frame)
                 restored += 1
                 completed += 1
                 print(f"GDELT checkpoint restored: {current.isoformat()} rows={len(restored_frame)} ({completed}/{total_days})", flush=True)
@@ -103,8 +130,8 @@ def fetch_gdelt_chunk(start: str, end: str, checkpoint_dir: Path | None = None) 
                     raise ValueError("GDELT PIT normalization rejected every row; " + ", ".join(f"{column}_nulls={count}" for column, count in invalid_counts.items()))
                 normalized["checkpoint_version"] = GDELT_CHECKPOINT_VERSION
                 normalized.to_csv(checkpoint, index=False, lineterminator="\n", date_format="%Y-%m-%dT%H:%M:%S%z")
-                normalized = normalized.drop(columns=["checkpoint_version"])
-                frames.append(normalized)
+                if collect_frames:
+                    frames.append(normalized.drop(columns=["checkpoint_version"]))
                 last_error = None
                 print(f"GDELT day checkpoint saved: {current.isoformat()} rows={len(normalized)} available_at={gdelt1_daily_availability(current).isoformat()}", flush=True)
                 break
@@ -124,12 +151,17 @@ def fetch_gdelt_chunk(start: str, end: str, checkpoint_dir: Path | None = None) 
             print(f"GDELT staging progress: {completed}/{total_days} days ({completed / total_days:.1%}); restored={restored}", flush=True)
         current += timedelta(days=1)
 
-    combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-    result = deduplicate_events(combined) if not combined.empty else pd.DataFrame(columns=["event_id", "event_time", "published_at", "available_at", "source_id", "category", "severity", "country", "entity", "sector", "duration_days", "media_intensity", "surprise"])
+    if not collect_frames:
+        if dropped_unavailable:
+            print(f"GDELT PIT filter: excluded {dropped_unavailable} rows without a valid event/availability/severity field", flush=True)
+        print(f"GDELT staging complete without global in-memory concatenation; missing_days={len(missing)}", flush=True)
+        return _empty_event_frame(), pd.DataFrame(missing)
+
+    combined = pd.concat(frames, ignore_index=True) if frames else _empty_event_frame()
+    result = deduplicate_events(combined)
     if dropped_unavailable:
         print(f"GDELT PIT filter: excluded {dropped_unavailable} rows without a valid event/availability/severity field", flush=True)
     return result, pd.DataFrame(missing)
-
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -143,12 +175,12 @@ def main() -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     checkpoint_dir = Path(args.checkpoint_dir) if args.checkpoint_dir else output.parent / (output.stem + "_days")
     missing_output = Path(args.missing_output) if args.missing_output else output.with_name(output.stem + "_missing.csv")
-    frame, missing = fetch_gdelt_chunk(args.start, args.end, checkpoint_dir=checkpoint_dir)
-    frame.to_csv(output, index=False, lineterminator="\n", date_format="%Y-%m-%dT%H:%M:%S%z")
+    _, missing = fetch_gdelt_chunk(args.start, args.end, checkpoint_dir=checkpoint_dir, collect_frames=False)
+    rows = _stream_checkpoints_to_csv(checkpoint_dir, output, pd.Timestamp(args.start).date(), pd.Timestamp(args.end).date())
     missing.to_csv(missing_output, index=False, lineterminator="\n")
-    print(f"GDELT chunk saved: {args.start} -> {args.end}; rows={len(frame)}; missing_days={len(missing)}; restored/checkpointed={len(list(checkpoint_dir.glob('day_*.csv')))}; path={output}; missing_manifest={missing_output}", flush=True)
+    checkpoint_count = len(list(checkpoint_dir.glob("day_*.csv")))
+    print(f"GDELT chunk saved: {args.start} -> {args.end}; rows={rows}; missing_days={len(missing)}; restored/checkpointed={checkpoint_count}; path={output}; missing_manifest={missing_output}", flush=True)
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
