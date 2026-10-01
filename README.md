@@ -14,6 +14,16 @@ Sistema experimental de investigación cuantitativa para estudiar si los datos d
 6. **Benchmark obligatorio:** una estrategia predictiva debe superar referencias sencillas antes de considerarse útil.
 7. **Reproducibilidad:** código, esquema de datos, procedencia, tests y cambios quedan versionados en Git.
 
+## Evaluación direccional LONG/SHORT/ABSTAIN
+
+El modelo baseline conserva el objetivo binario original y produce P(up). La evaluación experimental separa explícitamente la información alcista y bajista:
+
+- LONG cuando P(up) >= 0.55.
+- SHORT cuando P(up) <= 0.45.
+- ABSTAIN en la banda intermedia.
+
+Los umbrales están fijados ex ante y no se seleccionan con el OOS final. La capa reporta por separado cobertura, acierto LONG, acierto SHORT, operaciones, turnover y métricas financieras. La señal observada en t solo afecta al retorno t→t+1. Esta modificación no cambia el entrenamiento ni el lockbox A/B/C; queda en una rama experimental hasta completar validación independiente.
+
 ## Arquitectura
 
 ```text

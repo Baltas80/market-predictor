@@ -12,6 +12,7 @@ from .event_schema import MarketEvent
 from .experiments import ExperimentResult
 from .features import add_market_features, make_target
 from .financial import backtest_long_only
+from .directional import backtest_directional
 from .historical_ingestion import dataframe_sha256
 from .reproducibility import canonical_json_hash
 from .research_gate import ResearchGateState, assert_market_session_audit
@@ -43,6 +44,44 @@ def run_baseline(df: pd.DataFrame, horizon: int = 5, initial_train_fraction: flo
     from .backtest import make_walk_forward_folds
     folds = make_walk_forward_folds(len(data), initial_train_size=initial_train_size, test_size=test_size, purge=horizon)
     return walk_forward_classification(data, FEATURE_COLUMNS, "target", folds)
+
+ 
+ 
+def run_directional_baseline(
+    df: pd.DataFrame,
+    *,
+    horizon: int = 5,
+    initial_train_fraction: float = 0.6,
+    test_fraction: float = 0.1,
+    upper_threshold: float = 0.55,
+    lower_threshold: float = 0.45,
+    transaction_cost_bps: float = 5.0,
+    slippage_bps: float = 0.0,
+    periods_per_year: int = 252,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, float]]:
+    """Run the non-lockbox baseline and evaluate LONG/SHORT/ABSTAIN actions.
+
+    This is an independent experimental diagnostic. It uses the existing
+    walk-forward baseline, not the final OOS lockbox, and does not fit or
+    select the directional thresholds.
+    """
+    data = prepare_baseline_data(df, horizon=horizon)
+    predictions, _ = run_baseline(
+        df,
+        horizon=horizon,
+        initial_train_fraction=initial_train_fraction,
+        test_fraction=test_fraction,
+    )
+    frame = predictions.join(data[["close"]], how="left")
+    directional_frame, metrics = backtest_directional(
+        frame,
+        upper_threshold=upper_threshold,
+        lower_threshold=lower_threshold,
+        transaction_cost_bps=transaction_cost_bps,
+        slippage_bps=slippage_bps,
+        periods_per_year=periods_per_year,
+    )
+    return predictions, directional_frame, metrics
 
 
 def run_final_lockbox(df: pd.DataFrame, horizon: int = 5, test_fraction: float = 0.2) -> tuple[pd.DataFrame, list]:
