@@ -1,0 +1,41 @@
+name: Multiclass Directional Evaluation
+
+on:
+  pull_request:
+    paths:
+      - "src/market_predictor/directional_target.py"
+      - "src/market_predictor/multiclass_model.py"
+      - "src/market_predictor/multiclass_pipeline.py"
+      - "tests/test_directional_target.py"
+      - "tests/test_multiclass_model.py"
+      - "tests/test_multiclass_pipeline.py"
+      - ".github/workflows/multiclass-directional.yml"
+  push:
+    paths:
+      - "src/market_predictor/directional_target.py"
+      - "src/market_predictor/multiclass_model.py"
+      - "src/market_predictor/multiclass_pipeline.py"
+      - "tests/test_directional_target.py"
+      - "tests/test_multiclass_model.py"
+      - "tests/test_multiclass_pipeline.py"
+      - ".github/workflows/multiclass-directional.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install package and test runner
+        run: python -m pip install --upgrade pip && python -m pip install -e . pytest
+      - name: Run multiclass tests
+        run: python -m pytest -q tests/test_directional_target.py tests/test_multiclass_model.py tests/test_multiclass_pipeline.py
