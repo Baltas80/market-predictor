@@ -23,10 +23,14 @@ No download result is automatically a lockbox result.
 
 ## Reproducibility
 
-Each staging output records `STAGING_VERSION`, source coverage, row counts, SHA-256 manifests and the exact source availability policy. The executor writes `ingestion_plan.json`, `source_manifest.json` and `staging_result.json`.
+Each staging output records `STAGING_VERSION`, source coverage, row counts, SHA-256 manifests and the exact source availability policy. The executor is intended to write `ingestion_plan.json`, `source_manifest.json` and `staging_result.json` when the corresponding stages are implemented and executed.
 
-`FRED_API_KEY` must be supplied through the environment for real execution. The default command performs no network retrieval.
+`FRED_API_KEY` must be supplied through the environment for real FRED retrieval. The default command performs no network retrieval.
 
-For a full historical run, use `--execute`. GDELT retrieval is intentionally explicit because it requires one daily export per calendar day over its available historical range. `--skip-gdelt` and `--skip-sec` are available for staged source-by-source validation and do not imply complete event coverage.
+## Execution status and safety
+
+**Do not assume that `--execute` performs real downloads.** The historical ingestion runbook records that the explicit execution switch was not wired to retrieval at the time of that review. Confirm the current implementation of `scripts/ingest_historical.py` and the workflow logs before treating any staged artifact as retrieved data. This protocol document alone does not prove execution capability.
+
+`--skip-gdelt` and `--skip-sec`, if supported by the current executor, only permit source-by-source validation and do not imply complete event coverage.
 
 The final lockbox is fail-closed on unresolved required GDELT source-days. Missing days are never imputed or silently tolerated.
